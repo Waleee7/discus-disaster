@@ -2,3 +2,5 @@
 // (it resolves tests/index.js). All real assertions live in the *.test.mjs files.
 import './physics.test.mjs';
 import './announcer.test.mjs';
+import './modes.test.mjs';
+import './leaderboard.test.mjs';

@@ -13,13 +13,17 @@ import {
   mulberry32,
 } from './physics.js';
 import { buildStadium, toThree } from './scene.js';
-import { buildDiscus, buildThrower, buildTape, buildBlobShadow } from './actors.js';
+import { buildDiscus, buildThrower, buildTape, buildBlobShadow, buildRivalMarker } from './actors.js';
 import { Particles, Debris, disposeTree } from './fx.js';
 import { buildObstacles, makeLayout } from './obstacles.js';
 import { Announcer, rankFor } from './announcer.js';
 import { Haptics } from './haptics.js';
 import { Input } from './input.js';
-import { FULL_TURNS, DIZZY_TURNS, STEPOUT_TURNS, V_MIN, powerOf, speedOf, releaseAngleOf } from './tuning.js';
+import { DIZZY_TURNS, STEPOUT_TURNS, powerOf, speedOf, releaseAngleOf } from './tuning.js';
+import { MODES, modeOf, windowHalfFor, powerFor, releaseParams, assistNose, HEAD_FACTOR_PRO } from './modes.js';
+import { PERSONAS, personaOf, personaIndex, rivalOf, rivalMark } from './personas.js';
+import { Leaderboard, ALL_TIME, dailyBoardId, dateKey, dailyLayoutSeed, dailySeed, shareText } from './leaderboard.js';
+import { store } from './storage.js';
 
 export { powerOf, speedOf, releaseAngleOf };
 
@@ -32,8 +36,9 @@ const TAPE_START = 0.6;
 const TAPE_DUR = 1.1;
 const SLOW_SCALE = 0.3;
 const SKIP_GRACE = 0.35; // a press this soon after release is the release itself (key bounce), not a skip
-const WINDOW_HALF = 40; // deg: dial window half-width
-const HEAD_FACTOR = SECTOR_HALF_ANGLE / WINDOW_HALF; // dial angle -> throw heading (window edge == sector edge)
+const HEAD_FACTOR = HEAD_FACTOR_PRO; // pro: dial angle -> throw heading (window edge == sector edge)
+const OVERLAYS = ['start', 'help', 'board', 'initials']; // states that are a modal screen over the stadium
+const UNDER = ['help', 'board', 'initials']; // overlays that sit on top of whatever state was current
 const MULT_CAP = 9;
 const NOSE_MIN = -5;
 const NOSE_MAX = 50;
@@ -68,8 +73,23 @@ export class Game {
     this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.manual = false;
     this.clock = 0;
-    this.state = 'howto';
+    this.state = 'start';
     this.prevState = 'ready';
+    this.under = 'ready'; // the state beneath a help / board / initials overlay
+    this.modeId = store.get('dd-mode') === 'pro' ? 'pro' : 'rookie';
+    this.mode = modeOf(this.modeId);
+    this.personaId = personaOf(store.get('dd-char')).id;
+    this.daily = false;
+    this.dKey = dateKey();
+    this.runKey = null; // mode of the run in progress (null = no run yet)
+    this.windowHalf = windowHalfFor(this.mode, 0);
+    this.noseManual = false;
+    this.noseDrag = 0;
+    this.assistAtt = 25;
+    this.board = new Leaderboard();
+    this.pending = null; // { at, ... } initials prompt scheduled on the game clock
+    this.ini = { letters: [0, 0, 0], slot: 0 };
+    this.finalInfo = null;
     this.attempt = 0;
     this.attempts = [];
     this.score = 0;
@@ -103,8 +123,10 @@ export class Game {
     this.particles = new Particles(this.scene);
     this.debris = new Debris(this.scene);
     this.obstacles = buildObstacles(this.scene, { particles: this.particles, debris: this.debris });
-    this.thrower = buildThrower();
+    this.thrower = buildThrower(personaOf(this.personaId));
     this.scene.add(this.thrower.group);
+    this.rival = buildRivalMarker();
+    this.scene.add(this.rival.group);
     this.discus = buildDiscus();
     this.glow = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: glowTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }),
@@ -130,7 +152,6 @@ export class Game {
       powerFill: $('powerFill'),
       powerBar: $('powerBar'),
       powerTxt: $('powerTxt'),
-      speedTxt: $('speedTxt'),
       spinTxt: $('spinTxt'),
       dizzyTxt: $('dizzyTxt'),
       noseRot: $('noseRot'),
@@ -152,20 +173,25 @@ export class Game {
       btnNext: $('btnNext'),
       btnDetails: $('btnDetails'),
       btnReplay: $('btnReplay'),
-      btnDetails: $('btnDetails'),
       btnReplay2: $('btnReplay2'),
+      resCoach: $('resCoach'),
+      btnShare: $('btnShare'),
+      dial: document.querySelector('.dial'),
+      attemptLbl: $('attemptLbl'),
+      noseLbl: $('noseLbl'),
+      start: $('start'),
+      help: $('help'),
+      initials: $('initials'),
+      boardEl: $('board'),
+      boardList: $('boardList'),
+      boardSub: $('boardSub'),
       btnVoice: $('btnVoice'),
       btnHaptics: $('btnHaptics'),
       replayTag: $('replayTag'),
       replayInfo: $('replayInfo'),
-      howto: $('howto'),
     };
-    const arc = (a0, a1, r = 54) => {
-      const p = (a) => `${(r * Math.sin(a * DEG)).toFixed(2)} ${(-r * Math.cos(a * DEG)).toFixed(2)}`;
-      return `M0 0 L${p(a0)} A${r} ${r} 0 0 1 ${p(a1)} Z`;
-    };
-    $('dialWindow').setAttribute('d', arc(-WINDOW_HALF, WINDOW_HALF));
     $('dialSector').setAttribute('d', 'M0 -54 L0 -40');
+    this.setDial();
 
     this.announcer = new Announcer({ root: $('lt'), textEl: $('ltText'), tagEl: $('ltTag') });
     this.input = new Input(canvas.parentElement, {
@@ -181,6 +207,7 @@ export class Game {
     this.applyLayout(this.layout);
     this.resize();
     addEventListener('resize', () => this.resize());
+    addEventListener('keydown', (e) => this.onKey(e));
     document.addEventListener('visibilitychange', () => {
       this.last = performance.now();
       if (document.hidden && this.announcer.supportsSpeech) speechSynthesis.cancel();
@@ -189,11 +216,10 @@ export class Game {
     this.updateNose();
     this.setReadyVisuals();
     this.updateHudStatic();
-    try {
-      if (localStorage.getItem('dd-howto-seen')) this.closeHowTo(true);
-    } catch {
-      /* private mode */
-    }
+    this.applyModeUi();
+    this.updateCarousel();
+    this.updateRival();
+    this.openStart(true);
   }
 
   // ------------------------------------------------------------------ plumbing
@@ -208,10 +234,29 @@ export class Game {
     click(d.btnHaptics, () => this.onAction('haptics'));
     click(d.btnReplay, () => this.onAction('replay'));
     click(d.btnReplay2, () => this.onAction('replay'));
+    click($('btnMenu'), () => this.onAction('menu'));
     click($('btnHelp'), () => this.onAction('help'));
+    click($('btnHelpOk'), () => this.closeHelp());
     click(d.btnNext, () => this.onAction('next'));
     click(d.btnDetails, () => this.setDetails(!d.result.classList.contains('open')));
-    click($('btnStart'), () => this.closeHowTo());
+    click($('btnStart'), () => this.closeStart());
+    click($('charPrev'), () => this.cycleCharacter(-1));
+    click($('charNext'), () => this.cycleCharacter(1));
+    click($('modeRookie'), () => this.setMode('rookie'));
+    click($('modePro'), () => this.setMode('pro'));
+    click($('btnBoard'), () => this.openBoard(ALL_TIME));
+    click($('btnBoard2'), () => this.openBoard(this.daily ? 'daily' : ALL_TIME));
+    click($('btnShare'), () => this.shareResult());
+    click($('tabAll'), () => this.showBoardTab(ALL_TIME));
+    click($('tabDaily'), () => this.showBoardTab('daily'));
+    click($('btnBoardClose'), () => this.closeBoard());
+    click($('btnPlayDaily'), () => this.playDaily());
+    click($('iniOk'), () => this.saveInitials());
+    click($('iniSkip'), () => this.skipInitials());
+    d.initials.querySelectorAll('.wheel').forEach((w, i) => {
+      click(w.querySelector('.up'), () => this.bumpLetter(i, 1));
+      click(w.querySelector('.down'), () => this.bumpLetter(i, -1));
+    });
     if (!this.announcer.supportsSpeech) {
       d.btnVoice.disabled = true;
       d.btnVoice.querySelector('b').textContent = 'N/A';
@@ -230,6 +275,7 @@ export class Game {
     this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
     this.particles.setViewport(h * this.dpr, this.baseFov);
+    this.rival.setScale(w / h < 0.9 ? 1.2 : 1);
   }
 
   applyLayout(l) {
@@ -243,6 +289,8 @@ export class Game {
     d.windVal.textContent = `${Math.abs(hw).toFixed(1)} m/s`;
     d.windCross.textContent = `CROSS ${Math.abs(l.wind.z).toFixed(1)} ${l.wind.z >= 0 ? '→' : '←'}`;
     d.windArrow.querySelector('.arrow').style.transform = `rotate(${Math.atan2(l.wind.z, l.wind.x) / DEG}deg)`;
+    // Rookie nose assist: the nose angle the auto-nose will ease toward for this wind (a typical good release)
+    this.assistAtt = assistNose({ speed: speedOf(0.9), releaseAngle: 33, heading: 0, wind: l.wind });
   }
 
   setState(s) {
@@ -250,13 +298,99 @@ export class Game {
     document.body.dataset.state = s;
     document.body.classList.toggle('hint-on', s === 'ready');
     this.dom.hint.classList.toggle('off', s !== 'ready');
+    this.rival.group.visible = s !== 'start' && this.rivalSet;
+  }
+
+  /** The stadium state the camera / HUD should show: the one beneath a help / board / initials overlay. */
+  viewState() {
+    return UNDER.includes(this.state) ? this.under : this.state;
+  }
+
+  // ------------------------------------------------------------------ mode, characters, rival
+  setDial() {
+    const w = this.windowHalf;
+    const r = 54;
+    const p = (a) => `${(r * Math.sin(a * DEG)).toFixed(2)} ${(-r * Math.cos(a * DEG)).toFixed(2)}`;
+    $('dialWindow').setAttribute('d', `M0 0 L${p(-w)} A${r} ${r} 0 0 1 ${p(w)} Z`);
+  }
+
+  applyModeUi() {
+    document.body.dataset.mode = this.modeId;
+    document.body.dataset.nose = this.noseManual || !this.mode.noseAssist ? 'manual' : 'auto';
+    $('modeRookie').setAttribute('aria-checked', String(this.modeId === 'rookie'));
+    $('modePro').setAttribute('aria-checked', String(this.modeId === 'pro'));
+    $('modeBlurb').textContent = this.mode.blurb;
+    this.dom.noseLbl.textContent = this.mode.noseAssist && !this.noseManual ? 'NOSE · AUTO' : 'NOSE ANGLE';
+    this.windowHalf = windowHalfFor(this.mode, this.attempt);
+    this.setDial();
+  }
+
+  setMode(id) {
+    if (!MODES[id] || id === this.modeId) return;
+    this.modeId = id;
+    this.mode = MODES[id];
+    store.set('dd-mode', id);
+    this.noseManual = false;
+    this.noseDrag = 0;
+    this.attitude = id === 'pro' ? 25 : this.attitude;
+    this.applyModeUi();
+    this.applyLayout(this.layout);
+    this.updateNose();
+    this.updateRival();
+  }
+
+  setPersona(id) {
+    const p = personaOf(id);
+    this.personaId = p.id;
+    store.set('dd-char', p.id);
+    const old = this.thrower;
+    const inHand = this.discus.group.parent === old.hand;
+    old.group.removeFromParent();
+    if (inHand) this.discus.group.removeFromParent(); // the discus is shared: never dispose it with the old athlete
+    old.dispose();
+    this.thrower = buildThrower(p);
+    this.scene.add(this.thrower.group);
+    if (inHand) {
+      this.thrower.hand.add(this.discus.group);
+      this.discus.group.position.set(0, 0, 0);
+      this.discus.group.quaternion.identity();
+      this.discus.group.rotation.set(this.attitude * DEG, 0, 0);
+    }
+    this.thrower.setFacing(180);
+    this.thrower.idle(this.clock);
+    this.updateCarousel();
+    this.updateRival();
+  }
+
+  cycleCharacter(dir) {
+    const n = PERSONAS.length;
+    this.setPersona(PERSONAS[(personaIndex(this.personaId) + dir + n) % n].id);
+  }
+
+  updateCarousel() {
+    const p = personaOf(this.personaId);
+    $('charName').textContent = p.name;
+    $('charRoleTxt').textContent = p.role.toUpperCase();
+    $('charCount').textContent = `${personaIndex(p.id) + 1}/${PERSONAS.length}`;
+    $('charBlurb').textContent = p.blurb;
+    $('charSwatch').style.background = p.css;
+    this.dom.start.style.setProperty('--char', p.css);
+  }
+
+  /** The "beat the rival" flag: the next athlete round the carousel, at their best mark for this mode. */
+  updateRival() {
+    const r = rivalOf(this.personaId);
+    this.rivalInfo = { name: r.name, mark: rivalMark(r, this.modeId, this.daily ? dailySeed(this.dKey) : null) };
+    this.rival.set({ mark: this.rivalInfo.mark, az: r.rival.az, color: r.colors.jersey, label: r.name });
+    this.rivalSet = true;
+    this.rival.group.visible = this.state !== 'start';
   }
 
   // ------------------------------------------------------------------ input handlers
   onPress() {
     switch (this.state) {
-      case 'howto':
-        this.closeHowTo();
+      case 'start':
+        this.closeStart();
         break;
       case 'ready':
         this.startSpin();
@@ -271,6 +405,9 @@ export class Game {
       case 'replay':
         this.endReplay();
         break;
+      case 'initials':
+        this.saveInitials();
+        break;
       default:
     }
   }
@@ -280,9 +417,42 @@ export class Game {
   }
 
   adjustNose(d) {
-    if (this.state === 'flight' || this.state === 'landed' || this.state === 'replay' || this.state === 'howto') return;
+    if (this.state !== 'ready' && this.state !== 'spin' && this.state !== 'result') return;
+    if (this.mode.noseAssist && !this.noseManual) {
+      // Rookie: finger jitter while holding must not switch the assist off; a deliberate drag (~4 deg) does
+      this.noseDrag += Math.abs(d);
+      if (this.noseDrag < 4) return;
+      this.noseManual = true;
+      document.body.dataset.nose = 'manual';
+      this.dom.noseLbl.textContent = 'NOSE ANGLE';
+    }
     this.attitude = clamp(this.attitude + d, NOSE_MIN, NOSE_MAX);
     this.updateNose();
+  }
+
+  onKey(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const st = this.state;
+    if (st === 'start' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
+      this.cycleCharacter(e.code === 'ArrowLeft' ? -1 : 1);
+      e.preventDefault();
+    } else if (st === 'board' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
+      this.showBoardTab(this.boardTab === ALL_TIME ? 'daily' : ALL_TIME);
+      e.preventDefault();
+    } else if (st === 'initials') {
+      const i = this.ini;
+      if (e.code === 'ArrowUp') this.bumpLetter(i.slot, 1);
+      else if (e.code === 'ArrowDown') this.bumpLetter(i.slot, -1);
+      else if (e.code === 'ArrowLeft') this.setSlot(i.slot - 1);
+      else if (e.code === 'ArrowRight') this.setSlot(i.slot + 1);
+      else if (e.code === 'Backspace') this.setSlot(i.slot - 1);
+      else if (/^Key[A-Z]$/.test(e.code) && !e.repeat) {
+        i.letters[i.slot] = e.code.charCodeAt(3) - 65;
+        this.setSlot(Math.min(2, i.slot + 1));
+        this.renderInitials();
+      } else return;
+      e.preventDefault();
+    }
   }
 
   onAction(a, data) {
@@ -302,20 +472,28 @@ export class Game {
         break;
       }
       case 'replay':
-        if (this.best && ['ready', 'result', 'final'].includes(this.state)) this.startReplay(this.best.rec);
+        if (this.best && ['ready', 'result'].includes(this.state)) this.startReplay(this.best.rec);
         else if (this.state === 'replay') this.endReplay();
         break;
       case 'next':
         if (this.state === 'result' || this.state === 'final') this.next();
-        else if (this.state === 'howto') this.closeHowTo();
+        else if (this.state === 'start') this.closeStart();
+        break;
+      case 'menu':
+        if (['ready', 'result', 'final'].includes(this.state)) this.openStart();
+        else if (this.state === 'start' && this.runKey) this.closeStart();
         break;
       case 'help':
-        if (this.state === 'howto') this.closeHowTo();
-        else if (this.state === 'ready' || this.state === 'result') this.openHowTo();
+        if (this.state === 'help') this.closeHelp();
+        else if (['start', 'ready', 'result', 'final'].includes(this.state)) this.openHelp();
         break;
       case 'close':
-        if (this.state === 'howto') this.closeHowTo();
+        if (this.state === 'help') this.closeHelp();
+        else if (this.state === 'board') this.closeBoard();
+        else if (this.state === 'initials') this.skipInitials();
         else if (this.state === 'replay') this.endReplay();
+        else if (this.state === 'start' && this.runKey) this.closeStart();
+        else if (['ready', 'result', 'final'].includes(this.state)) this.openStart();
         break;
       case 'padconnected':
         this.announcer.show(`Controller connected: ${(data && data.id ? data.id : 'gamepad').slice(0, 40)}. Hold A or RT to spin, stick for nose.`, 'CONTROLLER', 2, 3500);
@@ -328,26 +506,63 @@ export class Game {
     }
   }
 
-  openHowTo() {
-    this.prevState = this.state;
-    this.dom.howto.hidden = false;
-    this.setState('howto');
+  // ------------------------------------------------------------------ start screen, help
+  /** Show the start screen (also the MENU). `first` = page load: nothing to resume. */
+  openStart(first = false) {
+    if (!first) {
+      this.prevState = this.state;
+      this.menuMode = this.modeId;
+    }
+    this.pending = null;
+    this.camSnap = first ? 3 : 0;
+    this.dom.start.hidden = false;
+    $('dailyDot').hidden = store.get('dd-daily-played') === dateKey();
+    this.setState('start');
+    this.dom.hint.classList.add('off');
+    this.announcer.clear();
     $('btnStart').focus({ preventScroll: true });
   }
 
-  closeHowTo(silent = false) {
-    this.dom.howto.hidden = true;
-    try {
-      localStorage.setItem('dd-howto-seen', '1');
-    } catch {
-      /* ignore */
+  /** PLAY: resume the run in progress (same mode) or start a new one. `silent` = test hook, no announcer line. */
+  closeStart(silent = false) {
+    if (this.state !== 'start') return;
+    this.dom.start.hidden = true;
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    const resume = this.runKey === this.modeId && this.prevState !== 'final' && this.prevState !== 'start';
+    if (resume) {
+      const back = this.prevState;
+      this.setState(back);
+      this.restoreThrower(back);
+      return;
     }
-    const back = this.prevState === 'result' && this.attempts.length ? 'result' : 'ready';
+    this.daily = false;
+    this.newRun(silent);
+  }
+
+  restoreThrower(st) {
+    if (st === 'ready') {
+      this.thrower.setFacing(180);
+    } else if (this.cur && this.cur.rec) {
+      this.thrower.setFacing(Number.isFinite(this.cur.rec.meta.psi) ? this.cur.rec.meta.psi : 0);
+      this.thrower.release(1);
+    }
+  }
+
+  openHelp() {
+    this.under = this.state === 'start' ? 'start' : this.state;
+    this.prevState = this.state;
+    this.dom.help.hidden = false;
+    this.setState('help');
+    $('btnHelpOk').focus({ preventScroll: true });
+  }
+
+  closeHelp() {
+    if (this.state !== 'help') return;
+    this.dom.help.hidden = true;
+    const back = this.prevState;
     this.setState(back);
     document.activeElement && document.activeElement.blur && document.activeElement.blur();
-    if (back === 'ready' && !silent) this.announcer.say('ready', {}, { priority: 1 });
-    if (back === 'ready' && silent) this.announcer.say('intro', {}, { priority: 1 });
-    this.prevState = 'ready';
+    if (back === 'start') $('btnStart').focus({ preventScroll: true });
   }
 
   // ------------------------------------------------------------------ attempt lifecycle
@@ -358,6 +573,8 @@ export class Game {
       pips[i].className = r ? (r.foul ? 'foul' : 'done') : i === this.attempt ? 'on' : '';
     }
     this.dom.attemptTxt.textContent = `${Math.min(this.attempt + 1, 3)}/3`;
+    this.dom.attemptLbl.textContent = this.daily ? 'DAILY' : 'ATTEMPT';
+    document.body.dataset.played = String(this.attempts.filter(Boolean).length);
   }
 
   updateHudStatic() {
@@ -368,7 +585,7 @@ export class Game {
 
   setReadyVisuals() {
     this.thrower.setFacing(180);
-    this.thrower.shoulder.rotation.set(0, 0, -0.08);
+    this.thrower.idle(this.clock);
     this.discus.group.removeFromParent();
     this.thrower.hand.add(this.discus.group);
     this.discus.group.position.set(0, 0, 0);
@@ -382,11 +599,9 @@ export class Game {
 
   next() {
     if (this.state === 'final') {
-      this.attempt = 0;
-      this.attempts = [];
-      this.score = 0;
-      this.best = null;
-      this.updateHudStatic();
+      this.daily = false; // "PLAY AGAIN" is a normal run; the Daily is opened from the BOARD
+      this.newRun();
+      return;
     } else if (this.attempt < 2) {
       this.attempt++;
     } else {
@@ -396,15 +611,45 @@ export class Game {
     this.startAttempt();
   }
 
-  startAttempt(seed) {
+  /** A fresh 3-throw run (normal or Daily) with the current mode and athlete. */
+  newRun(silent = false) {
+    this.pending = null;
+    this.attempt = 0;
+    this.attempts = [];
+    this.score = 0;
+    this.best = null;
+    this.runKey = this.modeId;
+    this.noseManual = false;
+    this.noseDrag = 0;
+    this.dKey = dateKey();
+    this.updateHudStatic();
+    this.applyModeUi();
+    this.updateRival();
+    this.startAttempt(undefined, silent);
+  }
+
+  startAttempt(seed, silent = false) {
     this.cancelFx();
+    if (seed === undefined && this.daily) {
+      // the Daily: the same wind + cast phases for everyone, and the obstacle clock restarts at a fixed value per throw
+      seed = dailyLayoutSeed(this.dKey, this.attempt);
+      this.tO = 4 + this.attempt * 9;
+    }
     this.applyLayout(makeLayout(seed ?? ++this.seedBase));
+    this.windowHalf = windowHalfFor(this.mode, this.attempt);
+    this.setDial();
+    this.applyModeUi();
     this.setReadyVisuals();
     this.updatePips();
     this.setState('ready');
     this.timeScale = 1;
     this.flashNow(null);
-    this.announcer.say('ready', {}, { priority: 1 });
+    if (silent) return;
+    if (this.attempt === 0) {
+      const p = personaOf(this.personaId);
+      const q = p.quips[(this.seedBase + (this.attempt || 0)) % p.quips.length];
+      this.announcer.show(`\u201c${q}\u201d  Beat the ${this.rivalInfo.name} flag: ${this.rivalInfo.mark.toFixed(1)} m.`, p.name, 2, 4200);
+    } else this.announcer.say('ready', {}, { priority: 1 });
   }
 
   /** Portrait result sheet: collapsed to a stat row by default, "details" opens the full breakdown. */
@@ -448,21 +693,28 @@ export class Game {
 
   updateSpin(dt) {
     const s = this.spin;
-    const p = powerOf(s.rot);
-    s.rot += (260 + 240 * p) * dt;
+    const m = this.mode;
+    const p = powerFor(m, s.rot);
+    let rate = 260 + 240 * p;
+    // Rookie: the needle eases down while it is inside the green, so there is time to react (power still follows rot)
+    if (m.needleSlow) rate *= 1 - m.needleSlow * smooth((this.windowHalf + 14 - Math.abs(s.psi)) / 14);
+    s.rot += rate * dt;
     s.t += dt;
     const dizzyK = smooth((s.rot / 360 - DIZZY_TURNS) / (STEPOUT_TURNS - DIZZY_TURNS));
     const wobble = dizzyK * 14 * Math.sin(s.t * 19);
     s.psi = wrap180(180 - s.rot);
     s.psiVis = s.psi + wobble;
-    s.power = powerOf(s.rot);
+    s.power = powerFor(m, s.rot);
     s.dizzy = dizzyK;
+    const inW = Math.abs(s.psiVis) <= this.windowHalf;
+    if (inW && !s.wasIn) this.haptics.tick(0.2); // a small tick as the needle enters the green
+    s.wasIn = inW;
     const half = Math.floor(s.rot / 180);
     if (half > s.tickN) {
       s.tickN = half;
       this.haptics.tick(s.power);
     }
-    if (s.rot / 360 >= FULL_TURNS && !s.announced.has('sweet')) {
+    if (s.rot / 360 >= m.fullTurns && !s.announced.has('sweet')) {
       s.announced.add('sweet');
       this.announcer.say('sweet', {}, { priority: 2, ms: 2000 });
       this.haptics.perfect();
@@ -472,37 +724,31 @@ export class Game {
       this.announcer.say('dizzy', {}, { priority: 2, ms: 2000 });
     }
     this.thrower.setFacing(s.psiVis);
+    this.thrower.spin(s.rot, s.power);
     this.shake = Math.max(this.shake, s.power * 0.035 + dizzyK * 0.06);
     if (s.rot / 360 >= STEPOUT_TURNS) this.stepOut();
   }
 
-  /** Release from the live spin: the dial angle decides heading AND release angle (timing is the skill). */
+  /**
+   * Release from the live spin: the dial angle decides heading AND release angle (timing is the skill).
+   * The mapping lives in modes.js (pure, unit-tested); Rookie also sets the nose for you unless you dragged it.
+   */
   doRelease() {
     const s = this.spin;
     const psi = Number.isFinite(s.psiVis) ? s.psiVis : 180;
     const p = Number.isFinite(s.power) ? s.power : 0;
-    const inWindow = Math.abs(psi) <= WINDOW_HALF;
-    const speed = speedOf(p);
-    let params = {
-      speed,
-      releaseAngle: releaseAngleOf(psi),
-      heading: clamp(psi, -90, 90) * HEAD_FACTOR,
-      attitude: this.attitude,
-      wind: this.layout.wind,
-    };
-    let foulReason = null;
-    if (Math.abs(psi) > 90) {
-      // released behind the thrower: straight into the cage
-      params = { ...params, speed: Math.max(4, speed * 0.28), releaseAngle: 25, heading: 180 + psi * 0.2 };
-      foulReason = 'cage';
+    const auto = this.mode.noseAssist && !this.noseManual;
+    const { params, meta } = releaseParams(this.mode, { psi, rot: Number.isFinite(s.rot) ? s.rot : 0, power: p, attitude: auto ? 'auto' : this.attitude, wind: this.layout.wind, attempt: this.attempt });
+    if (auto && Number.isFinite(params.attitude)) {
+      params.attitude = clamp(params.attitude, NOSE_MIN, NOSE_MAX);
+      this.attitude = params.attitude;
+      this.updateNose();
     }
-    const tap = foulReason === 'cage' && s.rot < 120;
-    const perfect = !foulReason && Math.abs(psi) <= 4;
-    if (perfect) {
-      this.flashNow('PERFECT', 'release window', 'good');
+    if (meta.perfect) {
+      this.flashNow('PERFECT', 'dead-centre release', 'perfect');
       this.haptics.perfect();
     }
-    this.launch(params, { foulReason, power: p, psi, inWindow, tap, perfect });
+    this.launch(params, { ...meta, power: p, psi });
   }
 
   stepOut() {
@@ -548,10 +794,11 @@ export class Game {
     this.glow.visible = true;
     this.shadow.visible = true;
     this.setDiscusPose(f.s, f.n);
-    this.thrower.shoulder.rotation.set(0, 0, -0.9);
+    this.thrower.release(0);
     this.shake = Math.max(this.shake, this.reducedMotion ? 0 : 0.22);
     this.haptics.release(meta.power ?? 0.6);
-    if (meta.tap) this.announcer.say('tap', {}, { priority: 2, ms: 2600 });
+    if (meta.short) this.announcer.say(meta.tap ? 'tapRookie' : 'shortToss', {}, { priority: 2, ms: 3200 });
+    else if (meta.tap) this.announcer.say('tap', {}, { priority: 2, ms: 2600 });
     else if (meta.perfect) this.announcer.say('perfect', {}, { priority: 2, ms: 1800 });
     else if (!meta.foulReason) this.announcer.say('release', {}, { priority: 2, ms: 1600 });
     this.updateMultHud();
@@ -762,13 +1009,27 @@ export class Game {
     }
   }
 
+  /** One plain line of coaching (Rookie only): after a foul, or after a playful short toss. */
+  coachFor(rec) {
+    const rr = rec.result;
+    const m = rec.meta || {};
+    if (!rr.foul) return m.short ? 'Short toss. Hold longer, then let go in the green.' : '';
+    if (rr.reason === 'stepout') return 'Let go before the circle runs out: about 3 turns is plenty.';
+    if (rr.reason === 'cage' || !m.inWindow) return 'Let go when the needle is in the green.';
+    return 'Aim for the middle of the green: wind pushes the disc sideways.';
+  }
+
   showResult(rec) {
     const d = this.dom;
     const rr = rec.result;
     const a = rec.analysis;
     d.result.hidden = false;
     d.result.classList.toggle('foul', rr.foul);
+    d.resChips.classList.remove('final-grid');
     d.resTag.textContent = `THROW ${rec.attempt + 1} OF 3`;
+    const coach = this.mode.noseAssist ? this.coachFor(rec) : '';
+    d.resCoach.hidden = !coach;
+    d.resCoach.textContent = coach;
     if (rr.foul) {
       d.resDist.textContent = 'FOUL';
       d.resFeet.textContent = { cage: 'hit the cage', stepout: 'stepped out', left: 'landed left of sector', right: 'landed right of sector' }[rr.reason];
@@ -790,6 +1051,10 @@ export class Game {
     const MULTS = { pigeon: 1.5, cart: 2.5, vendor: 2, sprinkler: 1.25, jumbotron: 3 };
     rec.hits.forEach((h) => chip(`${OBS[h]} <b>x${MULTS[h]}</b>`));
     if (!rr.foul) chip(`${mult > 1 ? `${rr.distance.toFixed(1)} x ${mult.toFixed(2).replace(/\.?0+$/, '')} = ` : ''}<b>${pts} PTS</b>`, 'total');
+    if (!rr.foul && this.rivalInfo) {
+      const diff = rr.distance - this.rivalInfo.mark;
+      chip(diff >= 0 ? `BEAT ${this.rivalInfo.name} <b>+${diff.toFixed(1)} m</b>` : `${this.rivalInfo.name} <b>${diff.toFixed(1)} m</b>`, diff >= 0 ? 'rival win' : 'rival');
+    }
     const row = (k, v, cls = '') => `<div><dt>${k}</dt><dd class="${cls}">${v}</dd></div>`;
     const sign = (v) => (v >= 0 ? '+' : '') + v.toFixed(1);
     d.resStats.innerHTML =
@@ -831,16 +1096,178 @@ export class Game {
     const rank = this.best ? rankFor(bestD).title : 'Park & Rec Hopeful';
     d.result.hidden = false;
     d.result.classList.remove('foul');
-    d.resTag.textContent = 'FINAL';
+    d.resTag.textContent = this.daily ? 'DAILY FINAL' : 'FINAL';
     d.resRank.textContent = rank;
+    d.resCoach.hidden = true;
     d.resDist.textContent = this.best ? fmt(bestD) : '0.00';
     d.resFeet.textContent = this.best ? formatFeetInches(bestD) : 'no legal throws';
-    d.resChips.innerHTML = `<span class="total">TOTAL <b>${this.score} PTS</b></span>` + this.attempts.map((a, i) => `<span>T${i + 1} <b>${a.foul ? 'FOUL' : a.distance.toFixed(1) + ' m'}</b></span>`).join('');
+    d.resChips.classList.add('final-grid');
+    const r = this.rivalInfo;
+    const rivalChip = !this.best || !r ? '' : bestD >= r.mark ? `<span class="rival win">BEAT ${r.name} <b>+${(bestD - r.mark).toFixed(1)} m</b></span>` : `<span class="rival">${r.name} LEADS <b>${(r.mark - bestD).toFixed(1)} m</b></span>`;
+    d.resChips.innerHTML = this.attempts.map((a, i) => `<span>T${i + 1} <b>${a.foul ? 'FOUL' : a.distance.toFixed(1) + ' m'}</b></span>`).join('') + `<span class="total">TOTAL <b>${this.score} PTS</b></span>` + rivalChip;
     d.resStats.innerHTML = `<div><dt>REAL WR</dt><dd>${WORLD_RECORD_M} m</dd></div><div><dt>YOU</dt><dd>${bestD ? (((bestD / WORLD_RECORD_M) * 100) | 0) + '% of WR' : '0%'}</dd></div>`;
     d.resNote.textContent = 'Real-world reference: 74.35 m, Mykolas Alekna, 2024.';
     d.btnNext.firstChild.textContent = 'PLAY AGAIN ';
+    this.setShareLabel(null);
     this.announcer.say('final', {}, { priority: 3 });
     this.tape.hide();
+    if (this.daily && bestD > 0) store.set('dd-daily-played', this.dKey);
+    this.finalInfo = { mark: bestD };
+    // arcade initials prompt, a beat after the final card appears (game clock, so it also works under the test stepper)
+    this.pending = null;
+    if (bestD > 0) {
+      const id = this.boardId();
+      this.board.qualifies(id, bestD).then((q) => {
+        if (q && this.state === 'final' && this.finalInfo && this.finalInfo.mark === bestD) this.pending = { at: this.clock + 1.2, id, mark: bestD };
+      });
+    }
+  }
+
+  boardId() {
+    return this.daily ? dailyBoardId(this.dKey) : ALL_TIME;
+  }
+
+  // ------------------------------------------------------------------ leaderboard UI
+  openInitials() {
+    const pen = this.pending;
+    this.pending = null;
+    if (!pen || this.state !== 'final') return;
+    this.under = 'final';
+    this.prevState = 'final';
+    const last = store.get('dd-initials');
+    const base = /^[A-Z]{3}$/.test(last || '') ? last : 'AAA';
+    this.ini = { letters: [...base].map((c) => c.charCodeAt(0) - 65), slot: 0, id: pen.id, mark: pen.mark };
+    $('iniMark').textContent = pen.mark.toFixed(1);
+    $('iniSub').textContent = `${this.daily ? 'TODAY’S DAILY' : 'ALL-TIME TOP 10'} · ${this.mode.label.toUpperCase()} · ${personaOf(this.personaId).name}`;
+    this.renderInitials();
+    this.dom.initials.hidden = false;
+    this.setState('initials');
+    $('iniOk').focus({ preventScroll: true });
+  }
+
+  renderInitials() {
+    for (let i = 0; i < 3; i++) {
+      const el = $('ini' + i);
+      el.textContent = String.fromCharCode(65 + this.ini.letters[i]);
+      el.parentElement.classList.toggle('on', i === this.ini.slot);
+    }
+  }
+
+  setSlot(i) {
+    this.ini.slot = clamp(i, 0, 2);
+    this.renderInitials();
+  }
+
+  bumpLetter(i, dir) {
+    this.ini.slot = i;
+    this.ini.letters[i] = (this.ini.letters[i] + dir + 26) % 26;
+    this.renderInitials();
+  }
+
+  skipInitials() {
+    if (this.state !== 'initials') return;
+    this.dom.initials.hidden = true;
+    this.setState('final');
+  }
+
+  async saveInitials() {
+    if (this.state !== 'initials' || this.saving) return;
+    this.saving = true;
+    const initials = this.ini.letters.map((n) => String.fromCharCode(65 + n)).join('');
+    store.set('dd-initials', initials);
+    try {
+      const res = await this.board.submit(this.ini.id, { initials, mark: this.ini.mark, character: this.personaId, mode: this.modeId, date: dateKey() });
+      this.dom.initials.hidden = true;
+      this.setState('final');
+      await this.openBoard(this.ini.id === ALL_TIME ? ALL_TIME : 'daily', res.rank);
+    } catch {
+      this.skipInitials();
+    } finally {
+      this.saving = false;
+    }
+  }
+
+  async openBoard(tab = ALL_TIME, highlightRank = null) {
+    if (this.state === 'board') return;
+    this.under = this.state === 'start' ? 'start' : this.state;
+    this.prevState = this.state;
+    this.dom.boardEl.hidden = false;
+    this.setState('board');
+    this.highlightRank = highlightRank;
+    await this.showBoardTab(tab);
+    $('btnBoardClose').focus({ preventScroll: true });
+  }
+
+  closeBoard() {
+    if (this.state !== 'board') return;
+    this.dom.boardEl.hidden = true;
+    const back = this.prevState;
+    this.setState(back);
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    if (back === 'start') $('btnBoard').focus({ preventScroll: true });
+  }
+
+  async showBoardTab(tab) {
+    this.boardTab = tab;
+    const daily = tab === 'daily';
+    $('tabAll').setAttribute('aria-selected', String(!daily));
+    $('tabDaily').setAttribute('aria-selected', String(daily));
+    $('btnPlayDaily').hidden = !daily;
+    const key = dateKey();
+    this.dom.boardSub.textContent = daily ? `${key} · same wind and cast for everyone today` : 'Top 10 on this device';
+    const rows = await this.board.top(daily ? dailyBoardId(key) : ALL_TIME);
+    const name = (id) => personaOf(id).name;
+    const shortDate = (k) => new Date(k + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const mine = this.highlightRank;
+    this.dom.boardList.innerHTML =
+      `<div class="brow head" aria-hidden="true"><span>#</span><span>NAME</span><span>MARK</span><span>ATHLETE</span><span>MODE</span><span>DATE</span></div>` +
+      rows
+        .map(
+          (e) =>
+            `<div class="brow${mine && e.rank === mine && !e.npc ? ' you' : ''}${e.npc ? ' npc' : ''}"><span class="rk num">${e.rank}</span><span class="in num">${e.initials}</span><span class="mk num">${e.mark.toFixed(1)}</span><span class="ch"><i style="background:${personaOf(e.character).css}"></i>${name(e.character)}</span><span class="md ${e.mode}">${e.mode === 'pro' ? 'PRO' : 'ROOKIE'}</span><span class="dt num">${shortDate(e.date)}</span></div>`,
+        )
+        .join('');
+    this.dom.boardList.scrollTop = 0;
+  }
+
+  /** Daily Throw: same wind + cast phases for everyone today. Starts a fresh run. */
+  playDaily() {
+    this.dom.boardEl.hidden = true;
+    this.dom.start.hidden = true;
+    this.dom.help.hidden = true;
+    this.daily = true;
+    this.setState('ready');
+    this.newRun();
+  }
+
+  async shareResult() {
+    const text = shareText({ daily: this.daily, mark: this.finalInfo ? this.finalInfo.mark : this.best ? this.best.distance : 0, mode: this.modeId });
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        ta.remove();
+      } catch {
+        ok = false;
+      }
+    }
+    this.lastShare = text;
+    this.setShareLabel(ok ? 'COPIED' : 'FAILED');
+    this.dom.resNote.textContent = ok ? text : `Copy this: ${text}`;
+    setTimeout(() => this.setShareLabel(null), 2200);
+  }
+
+  setShareLabel(txt) {
+    this.dom.btnShare.innerHTML = txt ? txt : '<span class="lg">COPY RESULT</span><span class="sm">COPY</span>';
   }
 
   // ------------------------------------------------------------------ replay
@@ -863,8 +1290,8 @@ export class Game {
     this.scene.add(this.discus.group);
     this.glow.visible = true;
     this.shadow.visible = true;
-    this.thrower.setFacing(rec.params.heading / HEAD_FACTOR);
-    this.thrower.shoulder.rotation.set(0, 0, -0.9);
+    this.thrower.setFacing(Number.isFinite(rec.meta.psi) ? rec.meta.psi : rec.params.heading / HEAD_FACTOR);
+    this.thrower.release(0);
     this.tO = rec.tRel;
     this.setDiscusPose({ x: first[1], y: first[2], z: first[3] }, rec.n);
     this.setState('replay');
@@ -899,6 +1326,7 @@ export class Game {
       this.setDiscusPose(s, rec.n, dt);
       this.emitTrail(s);
       this.replayS = s;
+      this.thrower.release(t / 0.8);
       if (r.t >= last[0]) {
         r.stage = 'landed';
         const q = toThree(s.x, 0.06, s.z);
@@ -923,7 +1351,7 @@ export class Game {
     this.dom.replayTag.hidden = true;
     this.cancelFx();
     this.applyLayout(this.cur && this.cur.rec ? this.cur.rec.layout : this.layout);
-    const back = this.prevState === 'howto' ? 'ready' : this.prevState;
+    const back = this.prevState === 'start' ? 'ready' : this.prevState;
     this.timeScale = 1;
     if (back === 'ready') {
       this.setReadyVisuals();
@@ -939,7 +1367,8 @@ export class Game {
         this.glow.visible = false;
         this.shadow.visible = false;
         this.tape.set(rr.range, rr.az, 1, rr.foul);
-        this.thrower.setFacing(c.rec.params.heading / HEAD_FACTOR);
+        this.thrower.setFacing(Number.isFinite(c.rec.meta.psi) ? c.rec.meta.psi : c.rec.params.heading / HEAD_FACTOR);
+        this.thrower.release(1);
         if (back === 'final') this.showFinal();
         else this.showResult(c.rec), (this.dom.resDist.textContent = rr.foul ? 'FOUL' : fmt(rr.distance)), (this.dom.resFeet.textContent = rr.foul ? this.dom.resFeet.textContent : formatFeetInches(rr.distance));
       }
@@ -973,27 +1402,31 @@ export class Game {
       d.powerFill.style.width = `${(p * 100).toFixed(0)}%`;
       d.powerFill.className = 'fill' + (this.spin.dizzy > 0.02 ? ' dizzy' : p >= 0.999 ? ' full' : '');
       d.powerTxt.textContent = `${(p * 100).toFixed(0)}%`;
-      d.speedTxt.textContent = `${speedOf(p).toFixed(1)} m/s`;
       d.spinTxt.textContent = (this.spin.rot / 360).toFixed(1);
       d.dizzyTxt.hidden = this.spin.dizzy < 0.02;
+      if (this.mode.noseAssist) d.powerTxt.textContent = this.spin.dizzy > 0.02 ? 'DIZZY!' : `${(p * 100).toFixed(0)}%`;
       d.powerBar.setAttribute('aria-valuenow', (p * 100).toFixed(0));
       const psi = this.spin.psiVis;
       d.needle.setAttribute('transform', `rotate(${psi.toFixed(1)})`);
-      const inW = Math.abs(psi) <= WINDOW_HALF;
-      d.dialState.textContent = inW ? 'RELEASE!' : 'WAIT';
-      d.dialState.className = 'num ' + (inW ? 'in' : 'out');
+      const inW = Math.abs(psi) <= this.windowHalf;
+      const perfect = Math.abs(psi) <= this.mode.perfectHalf;
+      d.dialState.textContent = perfect ? 'PERFECT!' : inW ? 'RELEASE!' : 'WAIT';
+      d.dialState.className = 'num ' + (perfect ? 'perfect' : inW ? 'in' : 'out');
+      d.dial.classList.toggle('hot', inW);
+      d.dial.classList.toggle('perfect', perfect);
       this.updateNose();
     } else if (this.state === 'ready') {
       d.powerFill.style.width = '0%';
       d.powerTxt.textContent = '0%';
-      d.speedTxt.textContent = `${V_MIN.toFixed(1)} m/s`;
       d.spinTxt.textContent = '0.0';
       d.dizzyTxt.hidden = true;
       d.needle.setAttribute('transform', 'rotate(180)');
       d.dialState.textContent = 'HOLD';
       d.dialState.className = 'num';
+      d.dial.classList.remove('hot', 'perfect');
     }
-    if (!spin && this.state !== 'ready' && this.state !== 'howto') {
+    if (!spin && this.state !== 'ready' && !OVERLAYS.includes(this.state)) {
+      d.dial.classList.remove('hot', 'perfect');
       d.dialState.textContent = this.state === 'replay' ? 'REPLAY' : 'AWAY';
       d.dialState.className = 'num';
     }
@@ -1008,10 +1441,11 @@ export class Game {
     let k = 3.2;
     let fov = this.baseFov;
     let roll = 0;
-    const flying = (this.state === 'flight' && this.cur && this.cur.stage === 'air') || (this.state === 'replay' && this.rt && this.rt.stage === 'air');
-    const landed = (this.state === 'flight' && this.cur && this.cur.stage === 'landed') || (this.state === 'replay' && this.rt && this.rt.stage === 'landed');
+    const st = this.viewState();
+    const flying = (st === 'flight' && this.cur && this.cur.stage === 'air') || (st === 'replay' && this.rt && this.rt.stage === 'air');
+    const landed = (st === 'flight' && this.cur && this.cur.stage === 'landed') || (st === 'replay' && this.rt && this.rt.stage === 'landed');
     if (flying) {
-      const s = this.state === 'replay' ? this.replayS : this.cur.f.s;
+      const s = st === 'replay' ? this.replayS : this.cur.f.s;
       const pos = toThree(s.x, s.y, s.z);
       const v3 = new THREE.Vector3(s.vz, 0, -s.vx);
       if (v3.lengthSq() > 1e-4) {
@@ -1030,7 +1464,7 @@ export class Game {
         look.copy(pos).addScaledVector(this.hdir, 6);
         k = 5;
       }
-    } else if (landed || this.state === 'result') {
+    } else if (landed || st === 'result') {
       const rec = this.cur && this.cur.rec;
       const rr = rec && rec.result;
       if (rr) {
@@ -1058,7 +1492,7 @@ export class Game {
         }
         k = 2.4;
       }
-      if (this.state === 'landed' || (landed && this.cur && this.cur.landedT < 0.45)) {
+      if (landed && this.cur && this.cur.landedT < 0.45) {
         // hold the low landing angle briefly, then rise
         const lt = this.cur ? this.cur.landedT : 0;
         if (lt < 0.45) {
@@ -1067,13 +1501,32 @@ export class Game {
           k = 2;
         }
       }
-    } else if (this.state === 'final') {
+    } else if (st === 'start') {
+      // the athlete turns slowly beside the start card: the card owns the right (desktop / landscape) or bottom (portrait)
+      const portrait = cam.aspect < 0.9;
+      const D = portrait ? 3.4 : 3.6;
+      want.set(portrait ? 1.2 : 1.9, portrait ? 1.3 : 1.45, D);
+      look.set(0, 1.0, 0);
+      const card = this.dom.start.firstElementChild;
+      const H = 2 * D * Math.tan((this.baseFov * DEG) / 2);
+      if (portrait) look.y -= clamp((card ? card.offsetHeight : 400) / Math.max(1, innerHeight), 0.2, 0.7) * 0.5 * H * 0.95;
+      else {
+        const fw = clamp((card ? card.offsetWidth : 380) / Math.max(1, innerWidth), 0.2, 0.6);
+        const fx = look.x - want.x;
+        const fz = look.z - want.z;
+        const fl = Math.hypot(fx, fz) || 1;
+        const sh = 0.5 * fw * H * cam.aspect * 0.95;
+        look.x += (-fz / fl) * sh; // camera-right
+        look.z += (fx / fl) * sh;
+      }
+      k = 3;
+    } else if (st === 'final') {
       const a = this.clock * 0.18;
       want.set(Math.sin(a) * 9, 4.5, Math.cos(a) * 9);
       look.set(0, 1.6, -4);
       k = 2;
     } else {
-      // howto / ready / spin: broadcast shot behind-right of the circle, slow drift
+      // ready / spin: broadcast shot behind-right of the circle, slow drift
       const drift = this.reducedMotion ? 0 : Math.sin(this.clock * 0.2) * 0.6;
       if (cam.aspect < 0.9) {
         want.set(3.2 + drift, 3.0, 10.8);
@@ -1082,28 +1535,23 @@ export class Game {
         want.set(5.4 + drift, 2.75, 9.8);
         look.set(-0.8, 1.45, -10);
       }
-      if (this.state === 'spin' && this.spin) {
+      if (st === 'spin' && this.spin) {
         const p = this.spin.power;
         want.z -= p * 1.1;
         want.x -= p * 0.8;
         fov -= p * 5;
         roll = (this.spin.dizzy || 0) * 0.12 * Math.sin(this.spin.t * 7);
       }
-      k = this.state === 'spin' ? 5 : 2.2;
-      if (this.state === 'howto') {
-        const a = this.clock * 0.12;
-        want.set(Math.sin(a) * 10 + 3, 3.4, Math.cos(a) * 9 + 2);
-        look.set(0, 1.6, -9);
-        k = 1.2;
-      }
+      k = st === 'spin' ? 5 : 2.2;
     }
     if (![want.x, want.y, want.z, look.x, look.y, look.z].every(Number.isFinite)) {
       want.set(5.4, 2.75, 9.8); // belt and braces: a non-finite target must never reach the camera
       look.set(-0.8, 1.45, -10);
     }
-    const f = 1 - Math.exp(-k * dt);
-    this.camPos.lerp(want, f);
-    this.camLook.lerp(look, 1 - Math.exp(-Math.max(k, 3) * dt));
+    const snap = this.camSnap > 0; // first frames of the start screen / MENU: cut straight to the shot, no fly-in
+    if (snap) this.camSnap--;
+    this.camPos.lerp(want, snap ? 1 : 1 - Math.exp(-k * dt));
+    this.camLook.lerp(look, snap ? 1 : 1 - Math.exp(-Math.max(k, 3) * dt));
     cam.position.copy(this.camPos);
     if (this.shake > 0.001 && !this.reducedMotion) {
       cam.position.x += (Math.random() - 0.5) * this.shake;
@@ -1149,10 +1597,25 @@ export class Game {
       this.tO += sdt;
       this.obstacles.update(this.tO, sdt);
     }
-    if (this.state === 'ready' || this.state === 'howto') {
-      this.thrower.group.rotation.y += 0; // idle: stays facing the camera side
+    const vs = this.viewState();
+    if (vs === 'ready' || vs === 'start') {
       this.stadium.setExcite(0.3 + 0.1 * Math.sin(this.clock));
+      if (this.state === 'start' || this.state === 'ready' || this.state === 'help') this.thrower.idle(this.clock);
+      if (this.state === 'start') this.thrower.setFacing(this.reducedMotion ? 150 : 180 + this.clock * 28);
     }
+    if (this.state === 'flight') {
+      const c = this.cur;
+      this.thrower.release(c && c.stage === 'air' ? c.f.s.t / 0.8 : 1);
+    }
+    // Rookie nose assist: ease the nose toward the best angle for this wind until the player takes over
+    if (this.mode.noseAssist && !this.noseManual && (this.state === 'ready' || this.state === 'spin')) {
+      const na = this.attitude + (this.assistAtt - this.attitude) * (1 - Math.exp(-3 * dt));
+      if (Math.abs(na - this.attitude) > 0.01) {
+        this.attitude = na;
+        this.updateNose();
+      }
+    }
+    if (this.pending && this.clock >= this.pending.at && this.state === 'final') this.openInitials();
     this.particles.update(sdt);
     this.debris.update(sdt);
     this.stadium.update(this.clock);
@@ -1200,7 +1663,7 @@ export class Game {
 
   /** Programmatic throw using the exact same pipeline as a human release. */
   debugThrow(p = {}) {
-    if (this.state === 'howto') this.closeHowTo(true);
+    if (this.state === 'start') this.closeStart(true);
     for (let i = 0; i < 2 && (this.state === 'result' || this.state === 'final'); i++) this.next();
     if (this.state !== 'ready') return Promise.reject(new Error('not ready: ' + this.state));
     if (p.seed !== undefined || p.wind) {
@@ -1222,8 +1685,9 @@ export class Game {
       wind: this.layout.wind,
     };
     this.thrower.setFacing(psi);
+    this.thrower.release(0);
     const promise = this.waitResult();
-    this.launch(params, { power, psi, inWindow: Math.abs(psi) <= WINDOW_HALF });
+    this.launch(params, { power, psi, inWindow: Math.abs(psi) <= this.windowHalf });
     return promise;
   }
 
@@ -1246,6 +1710,7 @@ export class Game {
     this.debris.dispose();
     this.obstacles.dispose();
     this.thrower.dispose();
+    this.rival.dispose();
     this.discus.dispose();
     this.tape.dispose();
     disposeTree(this.scene);

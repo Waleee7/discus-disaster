@@ -1,5 +1,6 @@
-// Records docs/gameplay.gif: ONE STAGED throw (real Space key hold/release, but a hand-picked layout seed and a pinned
-// obstacle clock so the pigeon pass lines up), captured frame-by-frame with the deterministic stepper
+// Records docs/gameplay.gif: ONE STAGED ROOKIE throw by the default athlete (BLAZE): the start screen, a real PLAY click,
+// then a real Space key hold/release with a hand-picked layout seed and a pinned
+// obstacle clock so the pigeon pass lines up (Rookie auto-nose included), captured frame-by-frame with the deterministic stepper
 // (window.__debug.advance), then palette-optimised with ffmpeg to <= 2.4 MB.
 //   node scripts/record-gif.mjs
 import { createRequire } from 'node:module';
@@ -14,7 +15,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FFMPEG = process.env.FFMPEG || process.env.HOME + '/.local/bin/ffmpeg';
 const FRAMES = process.env.FRAMES_DIR || path.join(tmpdir(), 'dd-frames');
 const FPS = 10;
-const SEED = 12; // pigeon flock lines up with a 69 m throw at obstacle-time 5.0 (see scripts/scan-seeds.mjs)
+const SEED = 12; // pigeon flock lines up with a 64 m Rookie throw at obstacle-time 5.0 (see scripts/scan-seeds.mjs)
 rmSync(FRAMES, { recursive: true, force: true });
 mkdirSync(FRAMES, { recursive: true });
 
@@ -26,14 +27,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 await page.goto(`http://127.0.0.1:${port}/index.html`);
 await page.waitForFunction(() => !!window.__debug);
 await page.evaluate(() => document.fonts.ready);
-await page.evaluate((seed) => {
-  const d = window.__debug;
-  d.manual(true);
-  d.skipIntro();
-  d.game.applyLayout(d.makeLayout(seed));
-  d.game.attitude = 22;
-  d.game.updateNose();
-}, SEED);
+await page.evaluate(() => window.__debug.manual(true));
 
 let n = 0;
 let stillShot = false;
@@ -44,6 +38,12 @@ const shot = async (dt, opts) => {
   return f;
 };
 
+for (let i = 0; i < 5; i++) await shot(1 / FPS); // the start screen: athlete turning beside the card
+await page.click('#btnStart'); // real PLAY click
+await page.evaluate((seed) => {
+  const g = window.__debug.game;
+  g.applyLayout(window.__debug.makeLayout(seed));
+}, SEED);
 for (let i = 0; i < 3; i++) await shot(1 / FPS); // idle in the circle
 await page.keyboard.down('Space'); // real input path
 let guard = 0;

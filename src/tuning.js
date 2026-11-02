@@ -10,6 +10,7 @@ export const V_MIN = 11; // m/s at zero power
 // See tests/physics.test.mjs (both "perfect throws" sweeps).
 export const V_MAX = 24.6;
 
-export const powerOf = (rot) => Math.min(1, Math.pow(rot / (FULL_TURNS * 360), 0.9));
+// `full` lets Rookie mode reach full power sooner; the default is the original (Pro) curve.
+export const powerOf = (rot, full = FULL_TURNS) => Math.min(1, Math.pow(rot / (full * 360), 0.9));
 export const speedOf = (p) => V_MIN + (V_MAX - V_MIN) * p;
 export const releaseAngleOf = (psi) => Math.min(55, Math.max(12, 35 - 0.3 * psi));

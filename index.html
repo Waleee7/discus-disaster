@@ -25,7 +25,7 @@
     <section class="bug" aria-label="Scoreboard">
       <div class="bug-logo"><span>DISCUS</span><span>DISASTER</span></div>
       <dl class="bug-body">
-        <div><dt>ATTEMPT</dt><dd><span class="pips" id="pips" aria-hidden="true"><i></i><i></i><i></i></span><span id="attemptTxt" class="num">1/3</span></dd></div>
+        <div><dt id="attemptLbl">ATTEMPT</dt><dd><span class="pips" id="pips" aria-hidden="true"><i></i><i></i><i></i></span><span id="attemptTxt" class="num">1/3</span></dd></div>
         <div><dt>BEST</dt><dd><b id="bestDist" class="num">--.--</b><small>m</small></dd></div>
         <div><dt>SCORE</dt><dd><b id="score" class="num">0</b></dd></div>
       </dl>
@@ -36,7 +36,7 @@
       <button id="btnVoice" type="button" aria-pressed="false" title="Announcer voice (M)" aria-label="Announcer voice"><span class="ic" aria-hidden="true">&#9835;</span><span class="lbl"> VOICE</span> <b>OFF</b></button>
       <button id="btnHaptics" type="button" aria-pressed="true" title="Haptics (H)" aria-label="Haptics"><span class="ic" aria-hidden="true">&#9678;</span><span class="lbl"> HAPTICS</span> <b>ON</b></button>
       <button id="btnReplay" type="button" disabled title="Replay best throw (R)" aria-label="Replay best throw"><span class="ic" aria-hidden="true">&#8634;</span><span class="lbl"> REPLAY</span></button>
-      <button id="btnHelp" type="button" title="How to play (?)" aria-label="How to play"><span class="ic" aria-hidden="true">?</span><span class="lbl"> HELP</span></button>
+      <button id="btnMenu" type="button" title="Menu: athlete, mode, board (Esc)" aria-label="Menu: athlete, mode and leaderboard"><span class="ic" aria-hidden="true">&#9776;</span><span class="lbl"> MENU</span></button>
     </nav>
 
     <!-- wind -->
@@ -65,12 +65,15 @@
         <b id="resDist" class="big num">0.00</b><span class="unit">m</span>
         <span id="resFeet" class="feet num"></span>
       </div>
+      <p id="resCoach" class="coach" hidden></p>
       <div id="resChips" class="chips"></div>
       <dl class="res-stats" id="resStats"></dl>
       <p id="resNote" class="note"></p>
       <div class="res-actions">
         <button id="btnNext" type="button" class="primary">NEXT THROW <kbd>SPACE</kbd></button>
         <button id="btnReplay2" type="button">REPLAY BEST</button>
+        <button id="btnBoard2" type="button">BOARD</button>
+        <button id="btnShare" type="button" aria-live="polite" aria-label="Copy result to clipboard" title="Copy your result to share"><span class="lg">COPY RESULT</span><span class="sm">COPY</span></button>
         <button id="btnDetails" type="button" class="details" aria-expanded="false" aria-controls="resStats" title="Show throw details">DETAILS <i aria-hidden="true"></i></button>
       </div>
     </section>
@@ -78,11 +81,9 @@
     <!-- meters -->
     <section class="meters" aria-label="Throw meters">
       <div class="meter">
-        <div class="meter-head"><span>POWER</span><b id="powerTxt" class="num">0%</b><span id="speedTxt" class="num dim">0.0 m/s</span></div>
+        <div class="meter-head"><span>POWER</span><b id="powerTxt" class="num">0%</b></div>
         <div class="bar" id="powerBar" role="meter" aria-label="Power" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div class="fill" id="powerFill"></div>
-          <div class="sweet" title="Full power"></div>
-          <div class="over" title="Dizzy zone"></div>
         </div>
         <div class="meter-foot"><span>SPINS <b id="spinTxt" class="num">0.0</b></span><span id="dizzyTxt" class="dizzy" hidden>DIZZY!</span></div>
       </div>
@@ -92,7 +93,7 @@
           <g id="noseDisc" transform="translate(60 40)"><g id="noseRot"><ellipse rx="34" ry="4.5" cy="0" class="disc"/><ellipse rx="34" ry="4.5" cy="0" class="rim"/></g></g>
           <path d="M0 0" id="noseArc" class="arc"/>
         </svg>
-        <div class="nose-txt"><small>NOSE ANGLE</small><b id="noseTxt" class="num">25&deg;</b><span id="aoaTxt" class="num dim">AoA -10&deg;</span></div>
+        <div class="nose-txt"><small id="noseLbl">NOSE ANGLE</small><b id="noseTxt" class="num">25&deg;</b><span id="aoaTxt" class="num dim">AoA -10&deg;</span></div>
       </div>
     </section>
 
@@ -110,7 +111,7 @@
     </section>
 
     <!-- hint chip -->
-    <div id="hint" class="hint" aria-hidden="true"><b>HOLD</b> to spin <i></i> <b>LET GO</b> as the needle sweeps the <em>green</em> (once per turn) <i></i> <b>&uarr;&darr;</b> nose angle</div>
+    <div id="hint" class="hint" aria-hidden="true"><b>HOLD</b> to spin <i></i> <b>LET GO</b> when the needle is in the <em>green</em><span id="hintPro"> <i></i> <b>&uarr;&darr;</b> nose angle</span></div>
 
     <!-- announcer lower third -->
     <section id="lt" class="lt" aria-label="Announcer" hidden>
@@ -119,12 +120,39 @@
     </section>
   </div>
 
-  <!-- how to play -->
-  <div id="howto" class="howto" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
+  <!-- start screen: title, athlete carousel, mode toggle, PLAY, BOARD -->
+  <div id="start" class="overlay start" role="dialog" aria-modal="true" aria-labelledby="startTitle">
+    <div class="start-card">
+      <button id="btnHelp" type="button" class="icon-btn" title="How to play (?)" aria-label="How to play">?</button>
+      <h1 id="startTitle">DISCUS <em>DISASTER</em></h1>
+      <p class="sub">Hold to spin. Let go in the green.</p>
+      <div class="carousel" role="group" aria-roledescription="carousel" aria-label="Choose your athlete">
+        <button id="charPrev" type="button" class="arrow" aria-label="Previous athlete">&lsaquo;</button>
+        <div class="char" aria-live="polite">
+          <span class="char-role" id="charRole"><i id="charSwatch"></i><span id="charRoleTxt">THE HYPE ROOKIE</span> <small id="charCount">1/3</small></span>
+          <b id="charName">BLAZE</b>
+          <span class="char-blurb" id="charBlurb"></span>
+        </div>
+        <button id="charNext" type="button" class="arrow" aria-label="Next athlete">&rsaquo;</button>
+      </div>
+      <div class="seg" role="radiogroup" aria-label="Difficulty">
+        <button id="modeRookie" type="button" role="radio" aria-checked="true">ROOKIE</button>
+        <button id="modePro" type="button" role="radio" aria-checked="false">PRO</button>
+      </div>
+      <p class="mode-blurb" id="modeBlurb"></p>
+      <div class="start-actions">
+        <button id="btnStart" type="button" class="primary big-btn">PLAY <kbd>SPACE</kbd></button>
+        <button id="btnBoard" type="button" class="board-btn">BOARD<i id="dailyDot" class="daily-dot" title="Today's Daily Throw is open">DAILY</i></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- how to play (opened with ? / the card button; the start screen stays minimal) -->
+  <div id="help" class="overlay howto" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="howto-card">
       <div class="howto-head">
         <div class="howto-title">
-          <h1 id="howtoTitle">DISCUS <br /><em>DISASTER</em></h1>
+          <h1 id="helpTitle">DISCUS <br /><em>DISASTER</em></h1>
           <p class="sub">Three steps, one needle, a lifetime of blaming the wind.</p>
         </div>
         <aside class="rules" aria-label="Rules at a glance">
@@ -148,12 +176,49 @@
         </li>
         <li>
           <div class="anim a3" aria-hidden="true"><svg viewBox="0 0 120 60"><line x1="6" y1="44" x2="114" y2="44" class="ref"/><g transform="translate(60 44)"><g class="tilt"><ellipse rx="36" ry="5" class="disc"/></g></g></svg></div>
-          <b>3 &nbsp;TILT THE NOSE</b><span>Drag up/down (or <kbd>&uarr;</kbd><kbd>&darr;</kbd>) to set nose angle. Read the wind. Real lift &amp; drag decide the rest.</span>
+          <b>3 &nbsp;NOSE (OPTIONAL)</b><span>Rookie sets the nose for you. Drag up/down (or <kbd>&uarr;</kbd><kbd>&darr;</kbd>) to take over; in Pro it is all yours.</span>
         </li>
       </ol>
       <div class="howto-foot">
         <p class="warn">Don&rsquo;t spin past 4 turns. Don&rsquo;t hit the pigeons. (Do hit the pigeons.)</p>
-        <button id="btnStart" type="button" class="primary big-btn">LET&rsquo;S THROW <kbd>SPACE</kbd></button>
+        <button id="btnHelpOk" type="button" class="primary big-btn">GOT IT <kbd>ESC</kbd></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- arcade initials entry (after a qualifying round) -->
+  <div id="initials" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="iniTitle">
+    <div class="ini-card">
+      <p class="kicker" id="iniKicker">NEW HIGH SCORE</p>
+      <h2 id="iniTitle"><b id="iniMark" class="num">0.0</b><span> m</span></h2>
+      <p class="ini-sub" id="iniSub"></p>
+      <div class="wheels" role="group" aria-label="Your three initials. Up and down change a letter, left and right move.">
+        <div class="wheel"><button type="button" class="up" aria-label="Letter 1 up">&#9650;</button><output class="letter num" id="ini0" aria-live="polite">A</output><button type="button" class="down" aria-label="Letter 1 down">&#9660;</button></div>
+        <div class="wheel"><button type="button" class="up" aria-label="Letter 2 up">&#9650;</button><output class="letter num" id="ini1" aria-live="polite">A</output><button type="button" class="down" aria-label="Letter 2 down">&#9660;</button></div>
+        <div class="wheel"><button type="button" class="up" aria-label="Letter 3 up">&#9650;</button><output class="letter num" id="ini2" aria-live="polite">A</output><button type="button" class="down" aria-label="Letter 3 down">&#9660;</button></div>
+      </div>
+      <div class="ini-actions">
+        <button id="iniOk" type="button" class="primary">SAVE <kbd>ENTER</kbd></button>
+        <button id="iniSkip" type="button">SKIP</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- leaderboard -->
+  <div id="board" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="boardTitle">
+    <div class="board-card">
+      <div class="board-head">
+        <h2 id="boardTitle">LEADERBOARD</h2>
+        <div class="tabs" role="tablist" aria-label="Boards">
+          <button id="tabAll" type="button" role="tab" aria-selected="true">ALL TIME</button>
+          <button id="tabDaily" type="button" role="tab" aria-selected="false">DAILY</button>
+        </div>
+      </div>
+      <p class="board-sub" id="boardSub"></p>
+      <div class="board-list" id="boardList" tabindex="0" role="region" aria-label="Top 10"></div>
+      <div class="board-foot">
+        <button id="btnPlayDaily" type="button" class="primary">PLAY TODAY&rsquo;S THROW</button>
+        <button id="btnBoardClose" type="button">CLOSE <kbd>ESC</kbd></button>
       </div>
     </div>
   </div>

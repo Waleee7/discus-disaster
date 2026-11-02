@@ -27,7 +27,9 @@ window.__debug = {
     return promise;
   },
   makeLayout,
-  skipIntro: () => game.closeHowTo(true),
+  skipIntro: () => game.closeStart(true),
+  setMode: (id) => game.setMode(id),
+  setPersona: (id) => game.setPersona(id),
   press: () => game.input._press(),
   release: () => game.input._release(),
   manual: (on = true) => (game.manual = on),

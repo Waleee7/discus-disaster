@@ -58,38 +58,107 @@ export function buildObstacles(scene, fx) {
     const g = new THREE.Group();
     root.add(g);
     const N = 16;
-    const bodyGeo = new THREE.SphereGeometry(0.2, 10, 8);
-    const headGeo = new THREE.SphereGeometry(0.085, 8, 6);
-    const wingGeo = new THREE.BoxGeometry(0.34, 0.015, 0.2);
-    const beakGeo = new THREE.ConeGeometry(0.025, 0.08, 6);
-    disposables.push(bodyGeo, headGeo, wingGeo, beakGeo);
-    const bodyMat = M(0x8790a6, { emissive: 0x10141f, roughness: 0.9 });
-    const neckMat = M(0x3f8f78, { emissive: 0x0a2a20 });
-    const beakMat = M(0xffb020);
-    disposables.push(bodyMat, neckMat, beakMat);
+    // Pigeon: grey-blue body, paler breast, small head with an orange eye, iridescent green/magenta neck patch,
+    // a dark-tipped leaf-shaped wing on a hinge (these are what flap), and a fan tail. Faces -Z.
+    const bodyGeo = new THREE.SphereGeometry(0.2, 14, 10);
+    const breastGeo = new THREE.SphereGeometry(0.15, 12, 8);
+    const headGeo = new THREE.SphereGeometry(0.075, 12, 8);
+    const eyeGeo = new THREE.SphereGeometry(0.016, 6, 6);
+    const beakGeo = new THREE.ConeGeometry(0.02, 0.07, 6);
+    const neckGeo = new THREE.SphereGeometry(0.1, 14, 10);
+    {
+      // iridescent neck patch: teal-green on top fading to magenta-violet underneath, via vertex colours
+      const pos = neckGeo.attributes.position;
+      const cols = [];
+      const top = new THREE.Color(0x19d6a0);
+      const bot = new THREE.Color(0xc43bd0);
+      const c = new THREE.Color();
+      for (let i = 0; i < pos.count; i++) {
+        c.copy(top).lerp(bot, Math.min(1, Math.max(0, (0.1 - pos.getY(i)) / 0.2 + (pos.getX(i) / 0.1) * 0.15)));
+        cols.push(c.r, c.g, c.b);
+      }
+      neckGeo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    }
+    const wingGeo = (() => {
+      const sh = new THREE.Shape();
+      sh.moveTo(0, 0.14);
+      sh.bezierCurveTo(0.14, 0.3, 0.42, 0.24, 0.58, 0.02);
+      sh.bezierCurveTo(0.42, -0.1, 0.26, -0.3, 0, -0.26);
+      sh.closePath();
+      const geo = new THREE.ShapeGeometry(sh, 10);
+      geo.rotateX(-Math.PI / 2); // lay flat: shape +y becomes forward (-Z)
+      const pos = geo.attributes.position;
+      const cols = [];
+      const root = new THREE.Color(0x7684a6);
+      const tip = new THREE.Color(0x2c3347);
+      const c = new THREE.Color();
+      for (let i = 0; i < pos.count; i++) {
+        c.copy(root).lerp(tip, Math.min(1, Math.max(0, (pos.getX(i) - 0.12) / 0.45)));
+        cols.push(c.r, c.g, c.b);
+      }
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+      return geo;
+    })();
+    const tailGeo = (() => {
+      const sh = new THREE.Shape();
+      sh.moveTo(-0.05, 0);
+      sh.lineTo(0.05, 0);
+      sh.lineTo(0.13, 0.3);
+      sh.lineTo(-0.13, 0.3);
+      sh.closePath();
+      const geo = new THREE.ShapeGeometry(sh);
+      geo.rotateX(-Math.PI / 2);
+      geo.translate(0, 0, 0.0); // rotate: shape +y -> -z, so flip to trail behind (+z)
+      geo.scale(1, 1, -1);
+      return geo;
+    })();
+    disposables.push(bodyGeo, breastGeo, headGeo, eyeGeo, beakGeo, neckGeo, wingGeo, tailGeo);
+    const bodyMat = M(0x65759a, { roughness: 0.85 });
+    const breastMat = M(0x8795b3, { roughness: 0.85 });
+    const headMat = M(0x7584a5, { roughness: 0.85 });
+    const neckMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.55, roughness: 0.28, emissive: 0x0b2a2a });
+    const wingMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide });
+    const tailMat = new THREE.MeshStandardMaterial({ color: 0x4a5368, roughness: 0.8, side: THREE.DoubleSide });
+    const beakMat = M(0xd8c3a3);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff9a2a });
+    disposables.push(bodyMat, breastMat, headMat, neckMat, wingMat, tailMat, beakMat, eyeMat);
     const rnd = mulberry32(777);
     const birds = [];
     for (let i = 0; i < N; i++) {
       const b = new THREE.Group();
       const body = new THREE.Mesh(bodyGeo, bodyMat);
-      body.scale.set(0.9, 0.75, 1.6);
-      const head = new THREE.Mesh(headGeo, neckMat);
-      head.position.set(0, 0.1, -0.3);
+      body.scale.set(0.85, 0.78, 1.55);
+      const breast = new THREE.Mesh(breastGeo, breastMat);
+      breast.scale.set(0.9, 0.9, 1.0);
+      breast.position.set(0, -0.02, -0.17);
+      const neck = new THREE.Mesh(neckGeo, neckMat);
+      neck.scale.set(1, 0.85, 0.95);
+      neck.position.set(0, 0.1, -0.25);
+      const head = new THREE.Mesh(headGeo, headMat);
+      head.position.set(0, 0.16, -0.31);
       const beak = new THREE.Mesh(beakGeo, beakMat);
       beak.rotation.x = -Math.PI / 2;
-      beak.position.set(0, 0.1, -0.39);
+      beak.position.set(0, 0.15, -0.385);
+      const tail = new THREE.Mesh(tailGeo, tailMat);
+      tail.position.set(0, 0.0, 0.28);
+      tail.rotation.x = 0.1;
+      b.add(body, breast, neck, head, beak, tail);
+      for (const s of [-1, 1]) {
+        const eye = new THREE.Mesh(eyeGeo, eyeMat);
+        eye.position.set(s * 0.055, 0.175, -0.335);
+        b.add(eye);
+      }
       const wl = new THREE.Group();
       const wr = new THREE.Group();
-      const wlm = new THREE.Mesh(wingGeo, bodyMat);
-      wlm.position.x = -0.17;
-      const wrm = new THREE.Mesh(wingGeo, bodyMat);
-      wrm.position.x = 0.17;
+      const wlm = new THREE.Mesh(wingGeo, wingMat);
+      wlm.scale.x = -1; // mirrored (left) wing
+      const wrm = new THREE.Mesh(wingGeo, wingMat);
       wl.add(wlm);
       wr.add(wrm);
-      wl.position.set(-0.1, 0.08, 0);
-      wr.position.set(0.1, 0.08, 0);
-      b.add(body, head, beak, wl, wr);
-      b.scale.setScalar(2.0);
+      wl.position.set(-0.1, 0.1, -0.05);
+      wr.position.set(0.1, 0.1, -0.05);
+      b.add(wl, wr);
+      b.scale.setScalar(1.9);
       g.add(b);
       birds.push({
         g: b,
@@ -127,7 +196,8 @@ export function buildObstacles(scene, fx) {
             if (i === this.hitIdx) {
               p = [p0[0] + 2 * d, Math.max(0.35, p0[1] - 4.9 * d * d + 1.5 * d), p0[2] + 0.5 * d];
               b.g.rotation.set(d * 9, d * 6, d * 11);
-              b.wl.rotation.z = b.wr.rotation.z = 0.2;
+              b.wl.rotation.z = -0.3;
+              b.wr.rotation.z = 0.3;
               toThree(p[0], p[1], p[2], b.g.position);
               b.pos = p;
               return;
@@ -141,9 +211,11 @@ export function buildObstacles(scene, fx) {
           b.g.rotation.set(0, yaw, 0);
           b.pos = p;
           toThree(p[0], p[1], p[2], b.g.position);
-          const f = Math.sin(t * 22 + i) * 0.95;
-          b.wl.rotation.z = f;
-          b.wr.rotation.z = -f;
+          // flap: both wing tips rise and fall together (right +z lifts, left -z lifts), body bobs against the beat
+          const f = Math.sin(t * 22 + i) * 0.85 + 0.15;
+          b.wl.rotation.z = -f;
+          b.wr.rotation.z = f;
+          b.g.position.y += Math.cos(t * 22 + i) * 0.05;
         });
       },
       test(x, y, z) {
@@ -215,6 +287,13 @@ export function buildObstacles(scene, fx) {
     add(new THREE.CylinderGeometry(0.16, 0.17, 0.09, 12), M(0x2f6bff), 0, 1.47, -0.05);
     add(new THREE.CapsuleGeometry(0.17, 0.3, 3, 8), M(0x2f6bff), 0, 0.98, 0.0);
     add(new THREE.BoxGeometry(0.46, 0.12, 0.08), M(0xff3e3e), 0, 1.0, -0.2); // clipboard
+    // headlights, antenna pennant, cap brim and a face so the coach reads as a person, not a cylinder
+    for (const x of [-0.38, 0.38]) add(new THREE.SphereGeometry(0.09, 8, 6), new THREE.MeshBasicMaterial({ color: 0xfff1b0 }), x, 0.62, -1.12);
+    add(new THREE.CylinderGeometry(0.015, 0.015, 1.4, 5), dark, 0.6, 1.2, 0.9);
+    add(new THREE.BoxGeometry(0.3, 0.16, 0.02), M(0xff3e3e), 0.75, 1.82, 0.9);
+    add(new THREE.BoxGeometry(0.2, 0.025, 0.14), M(0x2f6bff), 0, 1.44, -0.2);
+    for (const x of [-0.05, 0.05]) add(new THREE.SphereGeometry(0.018, 6, 6), dark, x, 1.34, -0.19);
+    add(new THREE.BoxGeometry(0.1, 0.014, 0.02), dark, 0, 1.27, -0.19);
     const o = {
       key: 'cart',
       hitAt: null,
@@ -286,6 +365,11 @@ export function buildObstacles(scene, fx) {
     add(new THREE.SphereGeometry(0.12, 12, 8), skin, 0, 1.65, 0);
     add(new THREE.CylinderGeometry(0.1, 0.13, 0.2, 10), M(0xf4f8ff, { emissive: 0x303030 }), 0, 1.86, 0);
     add(new THREE.BoxGeometry(0.62, 0.05, 0.4), M(0x303744), 0, 0.95, -0.38); // tray
+    add(new THREE.BoxGeometry(0.36, 0.5, 0.03), M(0xf4f8ff), 0, 1.02, -0.215); // apron
+    add(new THREE.BoxGeometry(0.36, 0.06, 0.035), M(0xffd23f), 0, 1.1, -0.22); // mustard stripe
+    for (const x of [-0.05, 0.05]) add(new THREE.SphereGeometry(0.016, 6, 6), M(0x10131c), x, 1.67, -0.115);
+    add(new THREE.BoxGeometry(0.09, 0.014, 0.02), M(0x10131c), 0, 1.6, -0.115);
+    add(new THREE.CylinderGeometry(0.035, 0.04, 0.2, 8), M(0xffd23f), 0.25, 1.06, -0.4); // mustard bottle
     for (let i = 0; i < 3; i++) {
       const bun = add(new THREE.CapsuleGeometry(0.06, 0.26, 3, 6), M(0xe8b66a), -0.15 + i * 0.15, 1.0, -0.38);
       bun.rotation.z = Math.PI / 2;

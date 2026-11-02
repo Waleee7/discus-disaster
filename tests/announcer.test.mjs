@@ -15,7 +15,7 @@ test('every announcer key has at least 3 distinct, non-empty variants', () => {
 });
 
 test('keys the game calls all exist, including one line set per rank, sectorEdge, bonus and newBest', () => {
-  const needed = ['intro', 'ready', 'spin', 'sweet', 'dizzy', 'release', 'tap', 'badRelease', 'stepout', 'cage', 'foulLeft', 'foulRight', 'headwind', 'tailwind', 'stall', 'pigeon', 'cart', 'vendor', 'sprinkler', 'jumbo', 'bonus', 'perfect', 'sectorEdge', 'newBest', 'final'];
+  const needed = ['intro', 'ready', 'spin', 'sweet', 'dizzy', 'release', 'tap', 'tapRookie', 'shortToss', 'badRelease', 'stepout', 'cage', 'foulLeft', 'foulRight', 'headwind', 'tailwind', 'stall', 'pigeon', 'cart', 'vendor', 'sprinkler', 'jumbo', 'bonus', 'perfect', 'sectorEdge', 'newBest', 'final'];
   for (let i = 0; i < RANKS.length; i++) needed.push('rank' + i);
   for (const k of needed) assert.ok(LINES[k], `missing LINES.${k}`);
 });

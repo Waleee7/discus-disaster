@@ -3,6 +3,9 @@
 // a poisoned release (NaN guard) and a scripted throw; asserts no console errors, finite camera, a result
 // shown quickly, 44px tool buttons, 11px minimum HUD text, a non-overlapping result card whose buttons are fully on
 // screen, a visible landing mark, and a press during flight that reaches the result in < 2 s with the same mark.
+// v2 adds: the start screen (athlete carousel, Rookie/Pro toggle, PLAY, BOARD), Rookie assists (forgiving tap, auto
+// nose, slower needle in the green, coaching after a foul), the initials entry and the leaderboard, all asserted at
+// every viewport for overlap / 44 px targets / 11 px text / on-screen.
 // Screenshots go to tests/out/ (git-ignored). Pass --docs to refresh the committed docs/shots/ on purpose.
 //   node tests/smoke.mjs [--docs]
 import { createRequire } from 'node:module';
@@ -67,6 +70,7 @@ const finiteCamera = (page) =>
 
 async function openFresh(name, viewport, mobile) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, isMobile: mobile, hasTouch: mobile });
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(url).origin }).catch(() => {});
   const page = await ctx.newPage();
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(`${name}: console.error: ${m.text()}`);
@@ -83,6 +87,8 @@ async function openFresh(name, viewport, mobile) {
 /** The NaN-lockup regression: a same-frame press+release (keyboard, then a real touch tap) must resolve fast, finite. */
 async function instantRelease(name, viewport, mobile) {
   const { ctx, page } = await openFresh(name, viewport, mobile);
+  // These are the original (v1) assertions and they describe PRO: a tap is a cage foul. Rookie's forgiving tap has its own test.
+  await page.evaluate(() => window.__debug.setMode('pro'));
   await page.evaluate(() => window.__debug.skipIntro());
   await page.evaluate(() => window.__debug.advance(0.3));
   const check = async (label) => {
@@ -131,7 +137,7 @@ async function instantRelease(name, viewport, mobile) {
 
 /** Layout + a11y assertions on the visible HUD. */
 async function hudChecks(page, name, mobile, state) {
-  const info = await page.evaluate(() => {
+  const info = await page.evaluate((state) => {
     const vis = (el) => {
       const cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05 || el.hidden) return false;
@@ -143,7 +149,7 @@ async function hudChecks(page, name, mobile, state) {
       return { l: r.left, t: r.top, r: r.right, b: r.bottom };
     };
     const small = [];
-    for (const el of document.querySelectorAll('#hud *:not(svg *):not(svg), #howto *:not(svg *):not(svg)')) {
+    for (const el of document.querySelectorAll('#hud *:not(svg *):not(svg), .overlay *:not(svg *):not(svg)')) {
       if (!vis(el) || !el.childNodes.length) continue;
       const hasText = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
       if (!hasText) continue;
@@ -159,12 +165,13 @@ async function hudChecks(page, name, mobile, state) {
     // landing mark (the discus rests on it) in CSS px
     let landing = null;
     const g = window.__debug.game;
-    if (res && vis(res) && g.cur && g.cur.rec.result && !g.cur.rec.result.foul) {
+    // the landing mark belongs to the per-throw result view; the final card orbits the athlete instead
+    if (res && vis(res) && state !== 'final' && g.cur && g.cur.rec.result && !g.cur.rec.result.foul) {
       const v = g.discus.group.position.clone().project(g.camera);
       landing = { x: ((v.x + 1) / 2) * innerWidth, y: ((1 - v.y) / 2) * innerHeight, front: v.z < 1 };
     }
     return { small, tools, others, bar, btns, landing, result, vw: innerWidth, vh: innerHeight, meta: document.querySelector('meta[name=viewport]').content };
-  });
+  }, state);
   assert.ok(!/user-scalable\s*=\s*(no|0)/i.test(info.meta), 'pinch zoom is not disabled');
   assert.deepEqual(info.small, [], `${name}/${state}: HUD text under 11px`);
   if (mobile) for (const b of info.tools) assert.ok(b.b - b.t >= 43.9 && b.r - b.l >= 43.9, `${name}: tool button ${b.id} is ${(b.r - b.l).toFixed(0)}x${(b.b - b.t).toFixed(0)}, needs 44x44`);
@@ -259,21 +266,101 @@ async function skipChecks(name, viewport, mobile) {
   log(`${name}: skip checks pass (press->result ${took} ms, mark ${sk.distance.toFixed(2)} m == ${ref.distance.toFixed(2)} m)`);
 }
 
+/** Layout assertions for a modal screen (start / initials / board): inside the viewport, 44px targets, no overlaps, 11px text. */
+async function overlayChecks(page, name, mobile, sel, label, { avoidThrower = false } = {}) {
+  const info = await page.evaluate(({ sel, avoidThrower }) => {
+    const root = document.querySelector(sel);
+    const card = root.firstElementChild;
+    const vis = (el) => {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || el.hidden) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const box = (el) => {
+      const r = el.getBoundingClientRect();
+      return { l: r.left, t: r.top, r: r.right, b: r.bottom };
+    };
+    const small = [];
+    for (const el of root.querySelectorAll('*:not(svg *):not(svg)')) {
+      if (!vis(el) || ![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
+      const fs = parseFloat(getComputedStyle(el).fontSize);
+      if (fs < 10.95) small.push(`${el.tagName.toLowerCase()}#${el.id}:${fs}px "${el.textContent.trim().slice(0, 16)}"`);
+    }
+    const buttons = [...root.querySelectorAll('button')].filter(vis).map((b) => ({ id: b.id || b.className || b.textContent.trim(), ...box(b) }));
+    let thrower = null;
+    if (avoidThrower) {
+      const g = window.__debug.game;
+      const pt = (y) => {
+        const v = g.thrower.group.position.clone().setY(y).project(g.camera);
+        return { x: ((v.x + 1) / 2) * innerWidth, y: ((1 - v.y) / 2) * innerHeight };
+      };
+      thrower = { head: pt(1.9), mid: pt(1.0), feet: pt(0.05) };
+    }
+    return { card: box(card), buttons, small, scroll: [card.scrollHeight, card.clientHeight], vw: innerWidth, vh: innerHeight, thrower };
+  }, { sel, avoidThrower });
+  assert.deepEqual(info.small, [], `${name}/${label}: text under 11px`);
+  const c = info.card;
+  assert.ok(c.l >= -0.5 && c.t >= -0.5 && c.r <= info.vw + 0.5 && c.b <= info.vh + 0.5, `${name}/${label}: card inside the viewport ${JSON.stringify(c)}`);
+  assert.ok(info.scroll[0] <= info.scroll[1] + 1, `${name}/${label}: card content fits without scrolling (${info.scroll})`);
+  assert.ok(info.buttons.length >= 2, `${name}/${label}: has buttons`);
+  for (const b of info.buttons) {
+    assert.ok(b.l >= c.l - 0.5 && b.r <= c.r + 0.5 && b.t >= c.t - 0.5 && b.b <= c.b + 0.5, `${name}/${label}: ${b.id} inside the card`);
+    assert.ok(b.b - b.t >= 43.9 && b.r - b.l >= 43.9 - (mobile ? 0 : 4), `${name}/${label}: ${b.id} is ${(b.r - b.l).toFixed(0)}x${(b.b - b.t).toFixed(0)}, needs 44`);
+  }
+  for (let i = 0; i < info.buttons.length; i++)
+    for (let j = i + 1; j < info.buttons.length; j++) {
+      const a = info.buttons[i];
+      const b = info.buttons[j];
+      assert.ok(!(a.l < b.r - 0.5 && a.r > b.l + 0.5 && a.t < b.b - 0.5 && a.b > b.t + 0.5), `${name}/${label}: ${a.id} overlaps ${b.id}`);
+    }
+  if (info.thrower) {
+    const T = info.thrower;
+    for (const k of ['head', 'mid', 'feet']) {
+      const p = T[k];
+      assert.ok(p.x > 0 && p.x < info.vw && p.y > 0 && p.y < info.vh, `${name}/${label}: athlete ${k} on screen ${JSON.stringify(p)}`);
+      assert.ok(!(p.x > c.l && p.x < c.r && p.y > c.t && p.y < c.b), `${name}/${label}: athlete ${k} hidden behind the card`);
+    }
+  }
+}
+
 async function run(name, viewport, mobile) {
   const { ctx, page } = await openFresh(name, viewport, mobile);
+  const click = (sel) => page.locator(sel).click();
 
-  // 1) how-to overlay is shown on first visit
-  assert.equal(await page.evaluate(() => window.__debug.state), 'howto', 'starts on the how-to overlay');
+  // 1) start screen on every load: title, athlete carousel, mode toggle, PLAY, BOARD (nothing else)
+  assert.equal(await page.evaluate(() => window.__debug.state), 'start', 'starts on the start screen');
   await page.evaluate(() => window.__debug.advance(0.6));
-  await hudChecks(page, name, mobile, 'howto');
-  await page.screenshot({ path: path.join(SHOTS, `${name}-1-howto.png`) });
+  await hudChecks(page, name, mobile, 'start');
+  await overlayChecks(page, name, mobile, '#start', 'start', { avoidThrower: true });
+  assert.equal((await page.textContent('#charName')).trim(), 'BLAZE');
+  assert.equal(await page.getAttribute('#modeRookie', 'aria-checked'), 'true', 'Rookie is the default');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(SHOTS, `${name}-1-start.png`) });
 
-  // 2) real input path: Space starts a spin, power meter moves, release launches a flight
-  await page.evaluate(() => window.__debug.skipIntro());
+  // 2) character select: the carousel changes athlete and the choice is remembered (localStorage, try/catch'd in the game)
+  await click('#charNext');
+  await page.evaluate(() => window.__debug.advance(0.8));
+  assert.equal((await page.textContent('#charName')).trim(), 'OLD IRON');
+  await overlayChecks(page, name, mobile, '#start', 'character', { avoidThrower: true });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(SHOTS, `${name}-2-character.png`) });
+  await click('#charPrev');
+  assert.equal((await page.textContent('#charName')).trim(), 'BLAZE');
+  await click('#modePro');
+  assert.equal(await page.getAttribute('#modePro', 'aria-checked'), 'true');
+  assert.equal(await page.evaluate(() => localStorage.getItem('dd-mode')), 'pro', 'mode choice is remembered');
+  assert.equal(await page.evaluate(() => localStorage.getItem('dd-char')), 'blaze', 'athlete choice is remembered');
+  await click('#modeRookie');
+  assert.equal(await page.evaluate(() => localStorage.getItem('dd-mode')), 'rookie');
+
+  // 3) PLAY with a real click, then the real input path: Space starts a spin, power meter moves, release launches a flight
+  await click('#btnStart');
+  assert.equal(await page.evaluate(() => window.__debug.state), 'ready', 'PLAY leaves the start screen');
   await page.evaluate(() => window.__debug.advance(0.5));
   await page.waitForTimeout(600);
   await hudChecks(page, name, mobile, 'ready');
-  await page.screenshot({ path: path.join(SHOTS, `${name}-2-ready.png`) });
+  await page.screenshot({ path: path.join(SHOTS, `${name}-3-ready.png`) });
   await page.keyboard.down('Space');
   await page.evaluate(() => window.__debug.advance(1.2));
   assert.equal(await page.evaluate(() => window.__debug.state), 'spin', 'Space starts the spin');
@@ -282,19 +369,19 @@ async function run(name, viewport, mobile) {
   await page.evaluate(() => window.__debug.advance(1.1));
   await page.waitForTimeout(450); // let HUD transitions settle
   await hudChecks(page, name, mobile, 'spin');
-  await page.screenshot({ path: path.join(SHOTS, `${name}-3-spin.png`) });
+  await page.screenshot({ path: path.join(SHOTS, `${name}-4-spin.png`) });
   await page.keyboard.up('Space');
   assert.equal(await page.evaluate(() => window.__debug.state), 'flight', 'releasing Space launches the discus');
   await settle(page, 30);
   assert.equal(await page.evaluate(() => window.__debug.state), 'result', 'human-style throw resolves');
 
-  // 3) scripted throw through the same pipeline: fixed seed, strong headwind, good nose angle
+  // 4) scripted throw through the same pipeline: fixed seed, strong headwind, good nose angle
   await page.evaluate(() => {
     window.__p = window.__debug.throw({ seed: 4, power: 0.93, psi: 0, attitude: 22, wind: { x: -3, z: 1 } });
   });
   await page.evaluate(() => window.__debug.advance(1.7));
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(SHOTS, `${name}-4-flight.png`) });
+  await page.screenshot({ path: path.join(SHOTS, `${name}-5-flight.png`) });
   await settle(page, 40);
   const res = await page.evaluate(() => window.__p);
   log(`${name}: result`, JSON.stringify({ distance: +res.distance.toFixed(2), foul: res.foul, mult: res.mult, rank: res.rank, hits: res.hits }));
@@ -304,18 +391,199 @@ async function run(name, viewport, mobile) {
   assert.match(shown, /^\d+\.\d\d$/, 'distance is displayed in metres');
   assert.ok(Math.abs(parseFloat(shown) - res.distance) < 0.011, 'displayed distance matches the physics result');
   assert.match((await page.textContent('#resFeet')).trim(), /^\d+' \d+"$/, 'distance also shown in feet/inches');
+  assert.match(await page.textContent('#resChips'), /OLD IRON/, 'the result shows the rival comparison');
   await page.evaluate(() => window.__debug.advance(1.5)); // the result camera glides to its overview
   await page.waitForTimeout(500); // let the CSS slide-in finish
   await hudChecks(page, name, mobile, 'result');
-  await page.screenshot({ path: path.join(SHOTS, `${name}-5-result.png`) });
+  await page.screenshot({ path: path.join(SHOTS, `${name}-6-result.png`) });
 
-  // 4) replay of the best throw
+  // 5) replay of the best throw
   await page.evaluate(() => window.__debug.game.onAction('replay'));
   assert.equal(await page.evaluate(() => window.__debug.state), 'replay');
   await page.evaluate(() => window.__debug.advance(2.2));
-  await page.screenshot({ path: path.join(SHOTS, `${name}-6-replay.png`) });
+  await page.screenshot({ path: path.join(SHOTS, `${name}-9-replay.png`) });
   await ctx.close();
   return res;
+}
+
+/** Rookie assists, through the real input path: forgiving tap, slower needle in the green, auto nose, coaching, PERFECT. */
+async function rookieChecks(name, viewport, mobile) {
+  const { ctx, page } = await openFresh(name, viewport, mobile);
+  await page.evaluate(() => window.__debug.skipIntro());
+  await page.evaluate(() => window.__debug.advance(0.3));
+  assert.equal(await page.evaluate(() => window.__debug.game.modeId), 'rookie');
+  // a) an instant tap is a playful short throw, not a foul
+  await page.keyboard.press('Space');
+  await settle(page);
+  const tap = await page.evaluate(() => window.__debug.game.cur.rec.result);
+  assert.ok(!tap.foul && tap.distance > 8 && tap.distance < 30, `rookie tap is a legal short throw: ${JSON.stringify(tap)}`);
+  assert.notEqual((await page.textContent('#resDist')).trim(), 'FOUL');
+  // b) the needle slows inside the green (and only there)
+  await page.evaluate(() => window.__debug.game.next());
+  await page.evaluate(() => window.__debug.advance(0.3));
+  const rates = await page.evaluate(() => {
+    const g = window.__debug.game;
+    g.startSpin();
+    let inR = [];
+    let outR = [];
+    for (let i = 0; i < 400 && g.state === 'spin' && g.spin.rot < 700; i++) {
+      const r0 = g.spin.rot;
+      const psi = g.spin.psi;
+      g.updateSpin(1 / 120);
+      const rate = (g.spin.rot - r0) * 120;
+      if (Math.abs(psi) < 25) inR.push(rate);
+      else if (Math.abs(psi) > 110) outR.push(rate);
+    }
+    const avg = (a) => a.reduce((x, y) => x + y, 0) / Math.max(1, a.length);
+    return { inside: avg(inR), outside: avg(outR) };
+  });
+  assert.ok(rates.inside < rates.outside * 0.85, `needle eases in the green: ${rates.inside.toFixed(0)} deg/s vs ${rates.outside.toFixed(0)} deg/s outside`);
+  await page.evaluate(() => {
+    const g = window.__debug.game;
+    g.spin = null;
+    g.setState('ready');
+  });
+  // c) hold for ~2.5 turns, let go in the green: legal, a real mark, nose auto-set, and PERFECT flashes at dead centre
+  await page.keyboard.down('Space');
+  const rel = await page.evaluate(() => {
+    const g = window.__debug.game;
+    g.attitude = 5; // a bad nose the assist must fix
+    g.noseManual = false;
+    for (let i = 0; i < 4000 && g.state === 'spin' && !(g.spin.rot > 880 && Math.abs(g.spin.psiVis) < 3); i++) g.update(1 / 240);
+    return { rot: g.spin.rot, psi: g.spin.psiVis };
+  });
+  assert.ok(Math.abs(rel.psi) < 3, `positioned at the centre of the green ${JSON.stringify(rel)}`);
+  await page.keyboard.up('Space');
+  assert.equal(await page.evaluate(() => window.__debug.state), 'flight');
+  assert.match(await page.textContent('#flash'), /PERFECT/, 'dead-centre release flashes PERFECT');
+  await settle(page);
+  const good = await page.evaluate(() => ({ r: window.__debug.game.cur.rec.result, att: window.__debug.game.cur.rec.params.attitude }));
+  assert.ok(!good.r.foul && good.r.distance > 40, `a rookie release in the green is a real throw: ${good.r.distance}`);
+  assert.ok(good.att > 12 && good.att < 40, `the nose was auto-set (was 5): ${good.att}`);
+  // d) coaching after a foul: one clear line, inside the result card
+  await page.evaluate(() => window.__debug.game.next());
+  await page.evaluate(() => window.__debug.advance(0.3));
+  await page.evaluate(() => {
+    const g = window.__debug.game;
+    window.__p = g.waitResult();
+    g.launch({ speed: 4, releaseAngle: 25, heading: 180, attitude: 25, wind: g.layout.wind }, { foulReason: 'cage', inWindow: false, power: 0.1, psi: 170 });
+  });
+  await settle(page);
+  await page.evaluate(() => window.__debug.advance(1.5));
+  await page.waitForTimeout(450);
+  assert.equal((await page.textContent('#resCoach')).trim(), 'Let go when the needle is in the green.');
+  const cb = await page.evaluate(() => {
+    const r = document.getElementById('result').getBoundingClientRect();
+    const c = document.getElementById('resCoach').getBoundingClientRect();
+    return { visible: c.width > 0 && c.height > 0, inside: c.top >= r.top && c.bottom <= r.bottom + 0.5 && c.left >= r.left && c.right <= r.right + 0.5, vh: innerHeight, b: c.bottom };
+  });
+  assert.ok(cb.visible && cb.inside && cb.b <= cb.vh, `coach line visible inside the result card ${JSON.stringify(cb)}`);
+  await hudChecks(page, name, mobile, 'foul-coach');
+  // e) Pro has no coaching line and no assist
+  await page.evaluate(() => window.__debug.setMode('pro'));
+  assert.equal(await page.evaluate(() => window.__debug.game.mode.noseAssist), false);
+  await ctx.close();
+  log(`${name}: rookie assist checks pass (tap ${tap.distance.toFixed(1)} m, green throw ${good.r.distance.toFixed(1)} m, needle ${rates.inside.toFixed(0)}/${rates.outside.toFixed(0)} deg/s)`);
+}
+
+/** Finish a run: initials entry (keyboard + buttons), leaderboard, daily tab, share text, final-screen chips in a 3-column grid. */
+async function boardChecks(name, viewport, mobile) {
+  const { ctx, page } = await openFresh(name, viewport, mobile);
+  await page.evaluate(() => window.__debug.skipIntro());
+  await page.evaluate(() => window.__debug.advance(0.3));
+  // three scripted throws (one is a foul so the final screen shows a FOUL chip), then the final card
+  for (let i = 0; i < 3; i++) {
+    await page.evaluate((i) => {
+      window.__p = window.__debug.throw({ seed: 20 + i, power: i === 1 ? 0.2 : 0.95, psi: i === 1 ? 170 : 0, attitude: 24, heading: i === 1 ? 60 : undefined });
+    }, i);
+    await settle(page, 40);
+    if (i < 2) await page.evaluate(() => window.__debug.game.next());
+    await page.evaluate(() => window.__debug.advance(0.3));
+  }
+  await page.evaluate(() => window.__debug.game.next()); // -> final
+  assert.equal(await page.evaluate(() => window.__debug.state), 'final');
+  await page.evaluate(() => window.__debug.advance(0.6));
+  await page.waitForTimeout(450);
+  // final-screen T1/T2/T3 chips sit in a 3-column grid on one row, equal widths
+  const chips = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('#resChips span')].filter((e) => /^T\d/.test(e.textContent));
+    return el.map((e) => {
+      const r = e.getBoundingClientRect();
+      return { t: Math.round(r.top), w: Math.round(r.width) };
+    });
+  });
+  assert.equal(chips.length, 3, 'three throw chips');
+  assert.equal(new Set(chips.map((c) => c.t)).size, 1, `T1/T2/T3 share one row ${JSON.stringify(chips)}`);
+  assert.ok(Math.max(...chips.map((c) => c.w)) - Math.min(...chips.map((c) => c.w)) <= 2, `equal-width columns ${JSON.stringify(chips)}`);
+  await hudChecks(page, name, mobile, 'final');
+  await page.screenshot({ path: path.join(SHOTS, `${name}-7-final.png`) });
+  // share text
+  await page.locator('#btnShare').click();
+  await page.waitForFunction(() => !!window.__debug.game.lastShare);
+  const shareTxt = await page.evaluate(() => window.__debug.game.lastShare);
+  assert.match(shareTxt, /^DISCUS DISASTER · \d+\.\d m · Rookie · discus-disaster\.vercel\.app$/, `share text: ${shareTxt}`);
+  // initials prompt appears a beat after the final card (qualifying: the board is seeded with beatable NPCs)
+  await page.evaluate(() => window.__debug.advance(1.6));
+  await page.waitForFunction(() => window.__debug.state === 'initials', null, { timeout: 5000 }).catch(() => {});
+  assert.equal(await page.evaluate(() => window.__debug.state), 'initials', 'a qualifying round asks for initials');
+  await overlayChecks(page, name, mobile, '#initials', 'initials');
+  await page.keyboard.press('KeyB');
+  await page.keyboard.press('KeyO');
+  assert.equal((await page.textContent('#ini0')) + (await page.textContent('#ini1')) + (await page.textContent('#ini2')), 'BOA', 'typing sets letters');
+  await page.locator('#initials .wheel:nth-child(3) .up').click(); // A -> B
+  await page.locator('#initials .wheel:nth-child(3) .down').click();
+  await page.locator('#initials .wheel:nth-child(3) .down').click(); // B -> A -> Z
+  assert.equal(await page.textContent('#ini2'), 'Z', 'wheel buttons change a letter');
+  await page.locator('#initials .wheel:nth-child(3) .up').click(); // Z -> A
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('KeyB'); // slot 0 -> B, advance
+  await page.keyboard.press('KeyO');
+  await page.keyboard.press('KeyB');
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: path.join(SHOTS, `${name}-7-initials.png`) });
+  await page.locator('#iniOk').click();
+  await page.waitForFunction(() => window.__debug.state === 'board', null, { timeout: 5000 });
+  await page.waitForTimeout(300);
+  await overlayChecks(page, name, mobile, '#board', 'board');
+  const row = await page.evaluate(() => {
+    const y = document.querySelector('.brow.you');
+    return y ? y.textContent : null;
+  });
+  assert.ok(row && /BOB/.test(row) && /ROOKIE/.test(row), `your entry is highlighted on the board: ${row}`);
+  const rows = await page.evaluate(() => document.querySelectorAll('.brow:not(.head)').length);
+  assert.ok(rows >= 6 && rows <= 10, `board has ${rows} rows`);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('dd-board-v1')).all.length), 1, 'entry saved to localStorage');
+  await page.screenshot({ path: path.join(SHOTS, `${name}-8-board.png`) });
+  // daily tab: own board + "play today's throw"
+  await page.locator('#tabDaily').click();
+  await page.waitForTimeout(150);
+  assert.ok((await page.evaluate(() => document.querySelectorAll('.brow:not(.head)').length)) >= 3, 'daily board is seeded');
+  assert.ok(await page.locator('#btnPlayDaily').isVisible(), 'daily tab offers the Daily Throw');
+  await overlayChecks(page, name, mobile, '#board', 'board-daily');
+  await page.locator('#btnBoardClose').click();
+  assert.equal(await page.evaluate(() => window.__debug.state), 'final', 'closing the board returns to the final card');
+  // Daily Throw: same wind for the same date, via the board button
+  const winds = [];
+  for (let k = 0; k < 2; k++) {
+    await page.locator('#btnBoard2').click();
+    await page.locator('#tabDaily').click();
+    await page.locator('#btnPlayDaily').click();
+    assert.equal(await page.evaluate(() => window.__debug.state), 'ready');
+    winds.push(await page.evaluate(() => JSON.stringify(window.__debug.game.layout.wind)));
+    assert.equal((await page.textContent('#attemptLbl')).trim(), 'DAILY');
+    await page.evaluate(() => {
+      const g = window.__debug.game;
+      g.attempts = [{ foul: true }, { foul: true }, { foul: true }];
+      g.attempt = 2;
+      g.best = null;
+      g.showFinal();
+    });
+    await page.evaluate(() => window.__debug.advance(0.1));
+  }
+  assert.equal(winds[0], winds[1], 'the Daily Throw has the same wind for everyone / every attempt that day');
+  await ctx.close();
+  log(`${name}: initials, board, daily and share checks pass`);
 }
 
 const VIEWS = [
@@ -329,6 +597,8 @@ let failed = false;
 try {
   for (const v of VIEWS) await run(...v);
   for (const v of VIEWS) await instantRelease(...v);
+  for (const v of VIEWS) await rookieChecks(...v);
+  for (const v of VIEWS) await boardChecks(...v);
   for (const v of VIEWS) await skipChecks(...v);
   if (errors.length) {
     console.error('[smoke] console/page errors:\n' + errors.join('\n'));

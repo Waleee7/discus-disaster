@@ -56,6 +56,16 @@ export const LINES = {
     'Zero turns, zero power, one very confused discus.',
     'A bold new technique: the polite nudge. The judges are not sure it counts.',
   ],
+  tapRookie: [
+    'A gentle tap! Rookie rules: that still counts. Hold longer for real distance.',
+    'One polite nudge, no cage required. Hold a little longer next time.',
+    'Short, sweet, legal. The discus is mostly confused and a little flattered.',
+  ],
+  shortToss: [
+    'Let go from behind the thrower? Rookie rules turned that into a short toss. Aim for the green next time.',
+    'That release was in the wrong place, so the discus took a gentle stroll. Legal, tiny, fine.',
+    'The assist caught that one. Short toss, no foul. Let go when the needle is green.',
+  ],
   badRelease: [
     'The release was so strange that the officials declared a cage foul on principle.',
     'Technical difficulties. The discus has been returned to the cage for its own protection.',
