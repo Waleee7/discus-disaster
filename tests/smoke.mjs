@@ -599,7 +599,9 @@ async function featureChecks(name, viewport, mobile) {
   const { ctx, page } = await openFresh(name, viewport, mobile);
   const D = (fn, arg) => page.evaluate(fn, arg);
   const click = (sel) => page.locator(sel).click();
-  const shot = (f, always = false) => page.screenshot({ path: path.join(always || !TO_DOCS ? path.join(ROOT, 'tests', 'out') : SHOTS, `${name}-${f}.png`) });
+  // --docs refreshes the feature shots only for the desktop and phone-portrait viewports (keeps docs/ small)
+  const toDocs = TO_DOCS && /desktop|mobile/.test(name);
+  const shot = (f, always = false) => page.screenshot({ path: path.join(always || !toDocs ? path.join(ROOT, 'tests', 'out') : SHOTS, `${name}-${f}.png`) });
   mkdirSync(path.join(ROOT, 'tests', 'out'), { recursive: true });
 
   // ---- venue + weather pickers (start screen) ----

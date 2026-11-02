@@ -1857,7 +1857,7 @@ export class Game {
         fov = base * (portrait ? 0.72 : 0.62);
         k = 4;
       } else {
-        want.set(portrait ? -12 : -13.5, portrait ? 2.4 : 1.8, portrait ? -3.5 : -4.5);
+        want.set(portrait ? -3.8 : -4.2, 3.0, portrait ? -16 : -14.5); // front-left, looking back through the cage mouth (a side-on shot would sit behind the net wall)
         look.set(0, 1.3, 0.2);
         fov = base * (portrait ? 0.62 : 0.65) - spinP * 3;
         k = 3;

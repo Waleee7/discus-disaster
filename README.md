@@ -16,7 +16,9 @@ Built by a real college discus thrower who also writes software. No build step, 
 
 <p align="center"><img src="docs/gameplay.gif" alt="Staged Rookie throw by BLAZE: start screen, spin, release in the green, pigeon strike, slow-mo landing, tape" width="720"></p>
 <p align="center"><img src="docs/screenshot.png" alt="Pigeon strike mid-flight under the stadium lights" width="49%"> <img src="docs/shots/mobile-390x844-2-character.png" alt="Phone start screen: athlete carousel, Rookie / Pro toggle, PLAY and BOARD" width="24%"> <img src="docs/shots/mobile-390x844-8-board.png" alt="Phone leaderboard" width="24%"></p>
-<p align="center"><sub>The GIF is a <b>staged</b> throw: a real PLAY click and key hold, but a hand-picked wind/obstacle seed and a pinned obstacle clock so the pigeon pass lines up, recorded as a time-lapse to stay under 2.5 MB. Your own throws will be messier.</sub></p>
+<p align="center"><img src="docs/shots/desktop-1440x900-10-technique.png" alt="Technique picker: five cards, the athlete demos the selected one" width="49%"> <img src="docs/shots/desktop-1440x900-14-world-rain-ready.png" alt="World Championships Stadium in the rain" width="49%"></p>
+<p align="center"><img src="docs/shots/desktop-1440x900-15-college-sunset-ready.png" alt="College meet at hot sunset: sun, long net shadows" width="49%"> <img src="docs/shots/mobile-390x844-13-venue-weather.png" alt="Phone start screen with the venue and weather pickers" width="24%"> <img src="docs/shots/mobile-390x844-12-swap.png" alt="Phone result card with the change-athlete button" width="24%"></p>
+<p align="center"><sub>The GIF is a <b>staged</b> throw in the World Championships Stadium (venue pick, a real PLAY click, the technique picker, then a key hold), but a hand-picked wind/obstacle seed and a pinned obstacle clock so the pigeon pass lines up, recorded as a time-lapse to stay under 2.5 MB. Your own throws will be messier.</sub></p>
 
 ## How it plays
 

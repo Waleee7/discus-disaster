@@ -1,4 +1,5 @@
-// Records docs/gameplay.gif: ONE STAGED ROOKIE throw by the default athlete (BLAZE): the start screen, a real PLAY click,
+// Records docs/gameplay.gif: ONE STAGED ROOKIE throw by the default athlete (BLAZE) in the World Championships Stadium: the start
+// screen (venue picked), a real PLAY click, the TECHNIQUE picker (cards clicked, the athlete demos each), then
 // then a real Space key hold/release with a hand-picked layout seed and a pinned
 // obstacle clock so the pigeon pass lines up (Rookie auto-nose included), captured frame-by-frame with the deterministic stepper
 // (window.__debug.advance), then palette-optimised with ffmpeg to <= 2.4 MB.
@@ -38,13 +39,23 @@ const shot = async (dt, opts) => {
   return f;
 };
 
-for (let i = 0; i < 5; i++) await shot(1 / FPS); // the start screen: athlete turning beside the card
+await page.click('#btnVenue'); // World Championships Stadium (the first build takes a moment)
+for (let i = 0; i < 4; i++) await shot(1 / FPS); // the start screen: athlete turning beside the card
 await page.click('#btnStart'); // real PLAY click
 await page.evaluate((seed) => {
   const g = window.__debug.game;
   g.applyLayout(window.__debug.makeLayout(seed));
 }, SEED);
 for (let i = 0; i < 3; i++) await shot(1 / FPS); // idle in the circle
+// technique picker: try Floater, then back to the neutral Wide-Leg Reverse (the staged throw keeps its timing)
+await page.click('#btnTech');
+for (let i = 0; i < 3; i++) await shot(1 / FPS);
+await page.locator('#techList .tc', { hasText: 'FLOATER' }).click();
+for (let i = 0; i < 5; i++) await shot(1 / FPS);
+await page.locator('#techList .tc', { hasText: 'WIDE-LEG REVERSE' }).click();
+for (let i = 0; i < 3; i++) await shot(1 / FPS);
+await page.click('#techDone');
+for (let i = 0; i < 2; i++) await shot(1 / FPS);
 await page.keyboard.down('Space'); // real input path
 let guard = 0;
 while (guard++ < 200) {
@@ -82,7 +93,7 @@ server.kill();
 
 const out = path.join(ROOT, 'docs', 'gameplay.gif');
 // keep every Nth captured frame (time-lapse feel) so the crowd noise doesn't blow the size budget
-const BUDGET_MB = 2.4;
+const BUDGET_MB = 2.45;
 const run = (keep, colors, w, dither) =>
   execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', path.join(FRAMES, 'f%04d.png'), '-vf',
     `select='not(mod(n,${keep}))',setpts=N/(${FPS}*TB),scale=${w}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=${colors}:stats_mode=diff[p];[b][p]paletteuse=dither=${dither}:diff_mode=rectangle`, '-r', String(FPS), '-loop', '0', out]);

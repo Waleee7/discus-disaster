@@ -167,8 +167,11 @@ test('camera net collision: a sight line through two nets (or one right in front
     assert.ok(Math.abs(Math.hypot(fixed.x, fixed.z) - r) < 1e-6 || fixed.y > 6, 'same radius (or lifted over the nets)');
   }
   // the shots the game uses are already clear
-  for (const c of [{ x: 5.4, y: 2.75, z: 9.8 }, { x: 3.2, y: 3, z: 10.8 }, { x: 2.0, y: 2.3, z: 9.8 }, { x: 1.6, y: 2.8, z: 10.4 }, { x: -13.5, y: 1.8, z: -4.5 }, { x: 1.6, y: 1.5, z: 3.1 }, { x: 0.6, y: 15.5, z: 5.5 }])
+  for (const c of [{ x: 5.4, y: 2.75, z: 9.8 }, { x: 3.2, y: 3, z: 10.8 }, { x: 2.0, y: 2.3, z: 9.8 }, { x: 1.6, y: 2.8, z: 10.4 }, { x: -4.2, y: 3.0, z: -14.5 }, { x: -3.8, y: 3.0, z: -16 }, { x: 1.6, y: 1.5, z: 3.1 }, { x: 0.6, y: 15.5, z: 5.5 }])
     assert.ok(!viewBlocked(c, ath), `preset shot ${JSON.stringify(c)} is not blocked`);
+  // the side-line ready shot looks through the open mouth: not a single net on the sight line
+  assert.equal(netHits({ x: -4.2, y: 3.0, z: -14.5 }, ath).length, 0);
+  assert.equal(netHits({ x: -3.8, y: 3.0, z: -16 }, ath).length, 0);
 });
 
 // ---- weather ----------------------------------------------------------------------------------------------------
