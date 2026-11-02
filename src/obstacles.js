@@ -1,0 +1,546 @@
+// The absurd cast: pigeon flock, coach's golf cart, hot-dog vendor, sprinkler, jumbotron.
+// Motion is a pure function of "obstacle time" tO so a recorded throw can be replayed exactly.
+import * as THREE from 'three';
+import { mulberry32 } from './physics.js';
+import { toThree } from './scene.js';
+
+const M = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.7, ...o });
+const tri = (u) => 1 - 4 * Math.abs((((u % 1) + 1) % 1) - 0.5); // triangle wave -1..1 (u=0 -> -1)
+const smooth = (x) => {
+  const t = Math.min(1, Math.max(0, x));
+  return t * t * (3 - 2 * t);
+};
+
+export function makeLayout(seed) {
+  const r = mulberry32(seed * 7919 + 13);
+  const headwind = -2.5 + r() * 8.5; // m/s, negative = tailwind
+  return {
+    seed,
+    wind: { x: -headwind, z: -4 + r() * 8 },
+    flockPhase: r() * 20,
+    cartX: 31 + r() * 22,
+    cartPhase: r(),
+    vendorPhase: r(),
+    sprinklerX: 46 + r() * 14,
+    sprinklerZ: -6 + r() * 12,
+  };
+}
+
+function label(text, w = 256, h = 128, bg = '#ffffff', fg = '#c0151f') {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, w, h);
+  g.strokeStyle = fg;
+  g.lineWidth = 8;
+  g.strokeRect(4, 4, w - 8, h - 8);
+  g.fillStyle = fg;
+  g.font = '700 58px Oswald, Impact, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  text.split('\n').forEach((t, i, a) => g.fillText(t, w / 2, h / 2 + (i - (a.length - 1) / 2) * 56));
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+export function buildObstacles(scene, fx) {
+  const root = new THREE.Group();
+  scene.add(root);
+  const disposables = [];
+  let L = makeLayout(1);
+  const P = { x: 0, y: 0, z: 0 };
+
+  // ---------------------------------------------------------------- PIGEONS
+  const flock = (() => {
+    const g = new THREE.Group();
+    root.add(g);
+    const N = 16;
+    const bodyGeo = new THREE.SphereGeometry(0.2, 10, 8);
+    const headGeo = new THREE.SphereGeometry(0.085, 8, 6);
+    const wingGeo = new THREE.BoxGeometry(0.34, 0.015, 0.2);
+    const beakGeo = new THREE.ConeGeometry(0.025, 0.08, 6);
+    disposables.push(bodyGeo, headGeo, wingGeo, beakGeo);
+    const bodyMat = M(0x8790a6, { emissive: 0x10141f, roughness: 0.9 });
+    const neckMat = M(0x3f8f78, { emissive: 0x0a2a20 });
+    const beakMat = M(0xffb020);
+    disposables.push(bodyMat, neckMat, beakMat);
+    const rnd = mulberry32(777);
+    const birds = [];
+    for (let i = 0; i < N; i++) {
+      const b = new THREE.Group();
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.scale.set(0.9, 0.75, 1.6);
+      const head = new THREE.Mesh(headGeo, neckMat);
+      head.position.set(0, 0.1, -0.3);
+      const beak = new THREE.Mesh(beakGeo, beakMat);
+      beak.rotation.x = -Math.PI / 2;
+      beak.position.set(0, 0.1, -0.39);
+      const wl = new THREE.Group();
+      const wr = new THREE.Group();
+      const wlm = new THREE.Mesh(wingGeo, bodyMat);
+      wlm.position.x = -0.17;
+      const wrm = new THREE.Mesh(wingGeo, bodyMat);
+      wrm.position.x = 0.17;
+      wl.add(wlm);
+      wr.add(wrm);
+      wl.position.set(-0.1, 0.08, 0);
+      wr.position.set(0.1, 0.08, 0);
+      b.add(body, head, beak, wl, wr);
+      b.scale.setScalar(2.0);
+      g.add(b);
+      birds.push({
+        g: b,
+        wl,
+        wr,
+        a0: rnd() * 6.28,
+        w: 0.8 + rnd() * 0.9,
+        r: 0.4 + rnd() * 0.6,
+        flee: [(rnd() - 0.5) * 16, 4 + rnd() * 7, (rnd() - 0.5) * 16],
+        pos: [0, 0, 0],
+      });
+    }
+    const center = (t) => [
+      25 + 3.5 * Math.sin(0.42 * t + L.flockPhase),
+      11 + 1.6 * Math.sin(0.61 * t + L.flockPhase * 2),
+      7.5 * Math.sin(0.31 * t + L.flockPhase * 1.7),
+    ];
+    const birdPos = (b, t) => {
+      const c = center(t);
+      const a = b.a0 + b.w * t;
+      return [c[0] + Math.cos(a) * 3.2 * b.r, c[1] + Math.sin(a * 1.3) * 1.5, c[2] + Math.sin(a) * 3.2 * b.r];
+    };
+    const o = {
+      key: 'pigeon',
+      hitAt: null,
+      hitIdx: -1,
+      meta: { label: 'PIGEON STRIKE', mult: 1.5, speedMul: 0.9, kick: 1.5 },
+      update(t, dt) {
+        birds.forEach((b, i) => {
+          let p = birdPos(b, t);
+          let yaw;
+          if (this.hitAt !== null && t >= this.hitAt) {
+            const d = t - this.hitAt;
+            const p0 = birdPos(b, this.hitAt);
+            if (i === this.hitIdx) {
+              p = [p0[0] + 2 * d, Math.max(0.35, p0[1] - 4.9 * d * d + 1.5 * d), p0[2] + 0.5 * d];
+              b.g.rotation.set(d * 9, d * 6, d * 11);
+              b.wl.rotation.z = b.wr.rotation.z = 0.2;
+              toThree(p[0], p[1], p[2], b.g.position);
+              b.pos = p;
+              return;
+            }
+            p = [p0[0] + b.flee[0] * d, p0[1] + b.flee[1] * d - 1.2 * d * d, p0[2] + b.flee[2] * d];
+            yaw = Math.atan2(-b.flee[2], b.flee[0]); // phys velocity (fx, fz) -> three (fz, -fx)
+          } else {
+            const p1 = birdPos(b, t + 0.1);
+            yaw = Math.atan2(-(p1[2] - p[2]), p1[0] - p[0]);
+          }
+          b.g.rotation.set(0, yaw, 0);
+          b.pos = p;
+          toThree(p[0], p[1], p[2], b.g.position);
+          const f = Math.sin(t * 22 + i) * 0.95;
+          b.wl.rotation.z = f;
+          b.wr.rotation.z = -f;
+        });
+      },
+      test(x, y, z) {
+        for (let i = 0; i < birds.length; i++) {
+          const q = birds[i].pos;
+          if ((q[0] - x) ** 2 + (q[1] - y) ** 2 + (q[2] - z) ** 2 < 1.1 * 1.1) {
+            this.hitIdx = i;
+            return true;
+          }
+        }
+        return false;
+      },
+      onHit(t, x, y, z) {
+        this.hitAt = t;
+        const q = toThree(x, y, z);
+        fx.particles.burst([q.x, q.y, q.z], { count: 40, speed: 7, color: [0.9, 0.95, 1], size: 0.4, life: 1.6, gravity: 2, drag: 1.2 });
+        fx.debris.spawn('feather', [q.x, q.y, q.z], 0xf4f8ff, 5, 14, 1.8);
+      },
+      reset() {
+        this.hitAt = null;
+        this.hitIdx = -1;
+      },
+      group: g,
+    };
+    return o;
+  })();
+
+  // ---------------------------------------------------------------- GOLF CART
+  const cart = (() => {
+    const g = new THREE.Group();
+    const inner = new THREE.Group();
+    inner.scale.setScalar(1.3);
+    g.add(inner);
+    root.add(g);
+    const white = M(0xf2f4f8, { emissive: 0x15171c });
+    const orange = M(0xff8a1f, { emissive: 0x401a00 });
+    const dark = M(0x15171e);
+    const add = (geo, mat, x, y, z, p = inner) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      p.add(m);
+      disposables.push(geo);
+      return m;
+    };
+    add(new THREE.BoxGeometry(1.15, 0.38, 2.2), white, 0, 0.5, 0);
+    add(new THREE.BoxGeometry(1.17, 0.1, 2.0), orange, 0, 0.55, 0);
+    add(new THREE.BoxGeometry(1.0, 0.25, 0.7), white, 0, 0.62, -0.95);
+    add(new THREE.BoxGeometry(0.95, 0.14, 0.5), dark, 0, 0.78, 0.5);
+    for (const [x, z] of [
+      [-0.55, -0.45],
+      [0.55, -0.45],
+      [-0.55, 0.95],
+      [0.55, 0.95],
+    ])
+      add(new THREE.CylinderGeometry(0.03, 0.03, 1.5, 6), dark, x, 1.25, z);
+    add(new THREE.BoxGeometry(1.35, 0.06, 2.0), orange, 0, 2.0, 0.25);
+    for (const [x, z] of [
+      [-0.62, -0.7],
+      [0.62, -0.7],
+      [-0.62, 0.8],
+      [0.62, 0.8],
+    ]) {
+      const w = add(new THREE.CylinderGeometry(0.26, 0.26, 0.18, 14), dark, x, 0.26, z);
+      w.rotation.z = Math.PI / 2;
+    }
+    // coach at the wheel
+    const skin = M(0xb97a52);
+    add(new THREE.SphereGeometry(0.15, 10, 8), skin, 0, 1.32, -0.05);
+    add(new THREE.CylinderGeometry(0.16, 0.17, 0.09, 12), M(0x2f6bff), 0, 1.47, -0.05);
+    add(new THREE.CapsuleGeometry(0.17, 0.3, 3, 8), M(0x2f6bff), 0, 0.98, 0.0);
+    add(new THREE.BoxGeometry(0.46, 0.12, 0.08), M(0xff3e3e), 0, 1.0, -0.2); // clipboard
+    const o = {
+      key: 'cart',
+      hitAt: null,
+      meta: { label: "COACH'S CART", mult: 2.5, speedMul: 0.5, kick: 6 },
+      posAt(t) {
+        const u = t * 5.5 / 88 + L.cartPhase;
+        return [L.cartX, 0, 22 * tri(u)];
+      },
+      update(t) {
+        let p = this.posAt(t);
+        const p1 = this.posAt(t + 0.1);
+        let yaw = p1[2] > p[2] ? -Math.PI / 2 : Math.PI / 2;
+        let hop = 0;
+        let spin = 0;
+        if (this.hitAt !== null && t >= this.hitAt) {
+          const d = t - this.hitAt;
+          p = this.posAt(this.hitAt);
+          spin = 10 * (1 - Math.exp(-d * 1.4));
+          hop = Math.max(0, Math.sin(d * 9)) * 0.5 * Math.exp(-d * 1.2);
+          if (d > 6) {
+            // coach recovers and drives off again
+            p = this.posAt(t);
+            spin = 0;
+          }
+        }
+        toThree(p[0], p[1] + hop, p[2], g.position);
+        g.rotation.y = yaw + spin;
+        this.cur = p;
+      },
+      test(x, y, z) {
+        const c = this.cur;
+        if (!c) return false;
+        const hit = Math.abs(x - c[0]) < 1.3 && Math.abs(z - c[2]) < 1.9 && y < 2.9;
+        return hit;
+      },
+      onHit(t, x, y, z) {
+        this.hitAt = t;
+        const q = toThree(x, y, z);
+        fx.particles.burst([q.x, q.y + 0.5, q.z], { count: 36, speed: 6, color: [1, 0.7, 0.2], size: 0.4, life: 1, gravity: 9 });
+        fx.debris.spawn('shard', [q.x, q.y + 0.5, q.z], 0xffffff, 6, 6, 0.8);
+      },
+      reset() {
+        this.hitAt = null;
+      },
+      group: g,
+    };
+    return o;
+  })();
+
+  // ---------------------------------------------------------------- VENDOR
+  const vendor = (() => {
+    const g = new THREE.Group();
+    const inner = new THREE.Group();
+    inner.scale.setScalar(1.35);
+    g.add(inner);
+    root.add(g);
+    const skin = M(0xc98a5e);
+    const add = (geo, mat, x, y, z, p = inner) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      p.add(m);
+      disposables.push(geo);
+      return m;
+    };
+    add(new THREE.CapsuleGeometry(0.09, 0.6, 3, 8), M(0x20252f), -0.13, 0.45, 0);
+    add(new THREE.CapsuleGeometry(0.09, 0.6, 3, 8), M(0x20252f), 0.13, 0.45, 0);
+    const torso = add(new THREE.CapsuleGeometry(0.2, 0.44, 4, 10), M(0xe53a3a, { emissive: 0x300808 }), 0, 1.15, 0);
+    torso.scale.set(1.2, 1, 0.8);
+    add(new THREE.SphereGeometry(0.12, 12, 8), skin, 0, 1.65, 0);
+    add(new THREE.CylinderGeometry(0.1, 0.13, 0.2, 10), M(0xf4f8ff, { emissive: 0x303030 }), 0, 1.86, 0);
+    add(new THREE.BoxGeometry(0.62, 0.05, 0.4), M(0x303744), 0, 0.95, -0.38); // tray
+    for (let i = 0; i < 3; i++) {
+      const bun = add(new THREE.CapsuleGeometry(0.06, 0.26, 3, 6), M(0xe8b66a), -0.15 + i * 0.15, 1.0, -0.38);
+      bun.rotation.z = Math.PI / 2;
+      bun.rotation.y = 0.3;
+    }
+    add(new THREE.CylinderGeometry(0.02, 0.02, 3.0, 6), M(0xe9e2d5), 0.42, 1.5, 0.05);
+    const signTex = label('HOT\nDOGS $9', 256, 128, '#ffd23f', '#c0151f');
+    disposables.push(signTex);
+    const sign = add(new THREE.PlaneGeometry(1.1, 0.55), new THREE.MeshBasicMaterial({ map: signTex, side: THREE.DoubleSide, toneMapped: false }), 0.42, 2.85, 0.05);
+    void sign;
+    const o = {
+      key: 'vendor',
+      hitAt: null,
+      meta: { label: 'HOT DOG HAVOC', mult: 2, speedMul: 0.55, kick: 5 },
+      posAt(t) {
+        return [15.5, 0, 8 * tri((t * 1.6) / 32 + L.vendorPhase)];
+      },
+      update(t) {
+        const p = this.posAt(t);
+        const p1 = this.posAt(t + 0.1);
+        let roll = 0;
+        let q = p;
+        if (this.hitAt !== null && t >= this.hitAt) {
+          const d = t - this.hitAt;
+          q = this.posAt(this.hitAt);
+          roll = smooth(d / 0.35) * 1.5 - smooth((d - 3) / 0.6) * 1.5;
+          q = [q[0] + 1.5 * smooth(d / 0.5), 0, q[2]];
+          if (d > 3.7) q = this.posAt(t);
+        }
+        toThree(q[0], q[1], q[2], g.position);
+        g.rotation.set(0, p1[2] > p[2] ? -Math.PI / 2 : Math.PI / 2, 0);
+        inner.rotation.set(roll * 1.0, 0, 0);
+        inner.position.y = roll * 0.0;
+        this.cur = q;
+        this.down = roll > 0.6;
+      },
+      test(x, y, z) {
+        const c = this.cur;
+        if (!c || this.down) return false;
+        return (x - c[0]) ** 2 + (z - c[2]) ** 2 < 1.2 * 1.2 && y < 3.3;
+      },
+      onHit(t, x, y, z) {
+        this.hitAt = t;
+        const q = toThree(x, y, z);
+        fx.debris.spawn('bun', [q.x, q.y + 0.5, q.z], 0xe8b66a, 9, 7, 1.4);
+        fx.debris.spawn('dog', [q.x, q.y + 0.6, q.z], 0xc0392b, 9, 9, 1.4);
+        fx.particles.burst([q.x, q.y + 0.5, q.z], { count: 30, speed: 5, color: [1, 0.85, 0.1], size: 0.35, life: 1.2, gravity: 8 });
+      },
+      reset() {
+        this.hitAt = null;
+        this.down = false;
+      },
+      group: g,
+    };
+    return o;
+  })();
+
+  // ---------------------------------------------------------------- SPRINKLER
+  const sprinkler = (() => {
+    const g = new THREE.Group();
+    root.add(g);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.55, 0.18, 14), M(0x2a2f3a));
+    const riser = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.7, 10), M(0xe9e2d5, { metalness: 0.6, roughness: 0.3 }));
+    riser.position.y = 0.4;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.1), M(0xff8a1f));
+    head.position.y = 0.78;
+    g.add(base, riser, head);
+    disposables.push(base.geometry, riser.geometry, head.geometry);
+    const o = {
+      key: 'sprinkler',
+      hitAt: null,
+      meta: { label: 'SPRINKLER SURPRISE', mult: 1.25, speedMul: 1, kick: 0 },
+      update(t, dt) {
+        toThree(L.sprinklerX, 0, L.sprinklerZ, g.position);
+        head.rotation.y = t * 4;
+        const jets = this.hitAt !== null && t - this.hitAt < 2.5 ? 7 : 2;
+        const a = t * 4;
+        for (let i = 0; i < jets && dt > 0; i++) {
+          const spd = this.hitAt !== null && t - this.hitAt < 2.5 ? 17 : 9;
+          const aa = a + (i / jets) * 6.28 + Math.random() * 0.3;
+          fx.particles.emit({
+            p: [g.position.x, 0.85, g.position.z],
+            v: [Math.cos(aa) * spd * 0.55, spd * (0.75 + Math.random() * 0.3), Math.sin(aa) * spd * 0.55],
+            color: [0.45, 0.7, 1],
+            size: 0.2,
+            life: 1.3,
+            gravity: 12,
+            drag: 0.1,
+          });
+        }
+        this.cur = [L.sprinklerX, 0, L.sprinklerZ];
+      },
+      test(x, y, z) {
+        const c = this.cur;
+        return !!c && y < 1.2 && (x - c[0]) ** 2 + (z - c[2]) ** 2 < 2.4 * 2.4;
+      },
+      onHit(t, x, y, z) {
+        this.hitAt = t;
+        const q = toThree(x, 0.5, z);
+        fx.particles.burst([q.x, q.y, q.z], { count: 50, speed: 8, color: [0.6, 0.8, 1], size: 0.4, life: 1.2, gravity: 10, up: 6 });
+      },
+      reset() {
+        this.hitAt = null;
+      },
+      group: g,
+    };
+    return o;
+  })();
+
+  // ---------------------------------------------------------------- JUMBOTRON
+  const jumbo = (() => {
+    const g = new THREE.Group();
+    root.add(g);
+    const cv = document.createElement('canvas');
+    cv.width = 512;
+    cv.height = 288;
+    const ctx = cv.getContext('2d');
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    disposables.push(tex);
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(13.3, 7.5), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(14, 8.2, 0.8), M(0x0c0f18, { metalness: 0.6, roughness: 0.4 }));
+    frame.position.z = -0.45;
+    screen.position.y = 0;
+    const board = new THREE.Group();
+    board.add(frame, screen);
+    board.position.y = 19.5;
+    g.add(board);
+    for (const x of [-7.4, 7.4]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.5, 19, 0.5), M(0x151923, { metalness: 0.5 }));
+      leg.position.set(x, 9.5, -0.45);
+      g.add(leg);
+      disposables.push(leg.geometry);
+    }
+    disposables.push(screen.geometry, frame.geometry);
+    // jumbotron faces the thrower: +Z in three coords is toward the camera
+    toThree(44, 0, 0, g.position);
+    const frames = [
+      ['LIVE: DISCUS DISASTER', '#ff8a1f', 'NOW THROWING: YOU'],
+      ['KISS CAM', '#ff3e8a', 'AWKWARD COUSINS DETECTED'],
+      ['WIND CHECK', '#35c27a', 'THE WIND IS DOING A THING'],
+      ['DISC-OUNT TIRE', '#2f6bff', 'ROUND THINGS. FLAT PRICES.'],
+    ];
+    let last = -1;
+    const draw = (t, broken) => {
+      const idx = Math.floor(t / 2.4) % frames.length;
+      const blink = broken ? Math.floor(t * 4) % 2 : 0;
+      const key = broken ? 100 + blink : idx;
+      if (key === last) return;
+      last = key;
+      ctx.fillStyle = broken ? '#05060a' : '#0a0d18';
+      ctx.fillRect(0, 0, 512, 288);
+      if (!broken) {
+        const [title, c, sub] = frames[idx];
+        ctx.fillStyle = c;
+        ctx.fillRect(0, 0, 512, 70);
+        ctx.fillStyle = '#05060a';
+        ctx.font = '700 46px Oswald, Impact, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(title, 256, 52);
+        ctx.fillStyle = '#f4f8ff';
+        ctx.font = '700 30px "JetBrains Mono", monospace';
+        ctx.fillText(sub, 256, 190);
+        ctx.fillStyle = c;
+        ctx.beginPath();
+        ctx.arc(256, 140, 22 + (idx % 2) * 6, 0, 7);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = blink ? '#ff3e3e' : '#6b1c1c';
+        ctx.font = '700 64px Oswald, Impact, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('NO SIGNAL', 256, 130);
+        ctx.font = '700 26px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#f4f8ff';
+        ctx.fillText('COACH IS ON THE PHONE', 256, 190);
+        ctx.strokeStyle = '#f4f8ff';
+        ctx.lineWidth = 3;
+        for (const [x0, y0, x1, y1] of [
+          [330, 0, 280, 120],
+          [280, 120, 340, 210],
+          [340, 210, 300, 288],
+          [280, 120, 200, 160],
+          [200, 160, 150, 288],
+        ]) {
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+        }
+      }
+      tex.needsUpdate = true;
+    };
+    draw(0, false);
+    const o = {
+      key: 'jumbotron',
+      hitAt: null,
+      meta: { label: 'JUMBOTRON SHATTER', mult: 3, speedMul: 0.8, kick: 2 },
+      update(t, dt) {
+        const broken = this.hitAt !== null && t >= this.hitAt;
+        draw(t, broken);
+        if (broken && t - this.hitAt < 2.2 && dt > 0) {
+          const w = g.position;
+          fx.particles.emit({
+            p: [w.x + (Math.random() - 0.5) * 11, 18 + Math.random() * 4, w.z + 0.6],
+            v: [(Math.random() - 0.5) * 4, -3 - Math.random() * 3, 2 + Math.random() * 3],
+            color: [1, 0.9, 0.5],
+            size: 0.35,
+            life: 0.9,
+            gravity: 9,
+          });
+        }
+      },
+      test(x, y, z) {
+        return this.hitAt === null && Math.abs(x - 44) < 0.8 && Math.abs(z) < 7 && y > 15.6 && y < 23.4;
+      },
+      onHit(t, x, y, z) {
+        this.hitAt = t;
+        const q = toThree(x, y, z);
+        fx.particles.burst([q.x, q.y, q.z], { count: 90, speed: 14, color: [0.7, 0.85, 1], size: 0.5, life: 1.6, gravity: 7 });
+        fx.debris.spawn('shard', [q.x, q.y, q.z], 0xaad4ff, 9, 12, 1.2);
+      },
+      reset() {
+        this.hitAt = null;
+        last = -1;
+      },
+      group: g,
+    };
+    return o;
+  })();
+
+  const list = [flock, cart, vendor, sprinkler, jumbo];
+  return {
+    root,
+    list,
+    layout: () => L,
+    setLayout(l) {
+      L = l;
+      list.forEach((o) => o.reset());
+    },
+    update(t, dt) {
+      list.forEach((o) => o.update(t, dt));
+    },
+    resetAll() {
+      list.forEach((o) => o.reset());
+    },
+    dispose() {
+      disposables.forEach((d) => d.dispose && d.dispose());
+      root.traverse((o) => {
+        if (o.material) {
+          for (const k in o.material) if (o.material[k] && o.material[k].isTexture) o.material[k].dispose();
+          o.material.dispose();
+        }
+      });
+      root.removeFromParent();
+    },
+    P,
+  };
+}

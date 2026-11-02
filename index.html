@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>DISCUS DISASTER</title>
+  <meta name="description" content="A funny, physically serious 3D discus game. Real lift and drag. Real headwind quirk. Unreal pigeons." />
+  <meta name="theme-color" content="#06080f" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="src/style.css" />
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <main id="stage" aria-label="Stadium view. Hold Space, click or touch to spin; release in the green window.">
+    <canvas id="gl"></canvas>
+  </main>
+
+  <div id="hud">
+    <!-- scorebug -->
+    <section class="bug" aria-label="Scoreboard">
+      <div class="bug-logo"><span>DISCUS</span><span>DISASTER</span></div>
+      <dl class="bug-body">
+        <div><dt>ATTEMPT</dt><dd><span class="pips" id="pips" aria-hidden="true"><i></i><i></i><i></i></span><span id="attemptTxt" class="num">1/3</span></dd></div>
+        <div><dt>BEST</dt><dd><b id="bestDist" class="num">--.--</b><small>m</small></dd></div>
+        <div><dt>SCORE</dt><dd><b id="score" class="num">0</b></dd></div>
+      </dl>
+    </section>
+
+    <!-- toolbar -->
+    <nav class="tools" aria-label="Game options">
+      <button id="btnVoice" type="button" aria-pressed="false" title="Announcer voice (M)"><span class="ic">&#9835;</span> VOICE <b>OFF</b></button>
+      <button id="btnHaptics" type="button" aria-pressed="true" title="Haptics (H)"><span class="ic">&#9678;</span> HAPTICS <b>ON</b></button>
+      <button id="btnReplay" type="button" disabled title="Replay best throw (R)"><span class="ic">&#8634;</span> REPLAY</button>
+      <button id="btnHelp" type="button" title="How to play (?)"><span class="ic">?</span> HELP</button>
+    </nav>
+
+    <!-- wind -->
+    <section class="wind" aria-label="Wind">
+      <svg id="windArrow" viewBox="-30 -30 60 60" aria-hidden="true"><circle r="27" class="ring"/><path d="M0 -20 L9 2 L3 0 L3 18 L-3 18 L-3 0 L-9 2 Z" class="arrow"/></svg>
+      <div class="wind-txt">
+        <span id="windKind" class="kind">HEADWIND</span>
+        <b id="windVal" class="num">0.0 m/s</b>
+        <span id="windCross" class="cross num">CROSS 0.0 &rarr;</span>
+      </div>
+    </section>
+
+    <!-- instant replay tag -->
+    <div id="replayTag" hidden><i></i> INSTANT REPLAY <span id="replayInfo" class="num"></span></div>
+
+    <!-- flash message -->
+    <div id="flash" role="status" aria-live="assertive" hidden></div>
+
+    <!-- result card -->
+    <section id="result" hidden aria-live="polite" aria-label="Throw result">
+      <div class="res-top">
+        <span id="resTag" class="tag">THROW 1</span>
+        <span id="resRank" class="rank"></span>
+      </div>
+      <div class="res-main">
+        <b id="resDist" class="big num">0.00</b><span class="unit">m</span>
+        <span id="resFeet" class="feet num"></span>
+      </div>
+      <div id="resChips" class="chips"></div>
+      <dl class="res-stats" id="resStats"></dl>
+      <p id="resNote" class="note"></p>
+      <div class="res-actions">
+        <button id="btnNext" type="button" class="primary">NEXT THROW <kbd>SPACE</kbd></button>
+        <button id="btnReplay2" type="button">REPLAY BEST</button>
+      </div>
+    </section>
+
+    <!-- meters -->
+    <section class="meters" aria-label="Throw meters">
+      <div class="meter">
+        <div class="meter-head"><span>POWER</span><b id="powerTxt" class="num">0%</b><span id="speedTxt" class="num dim">0.0 m/s</span></div>
+        <div class="bar" id="powerBar" role="meter" aria-label="Power" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="fill" id="powerFill"></div>
+          <div class="sweet" title="Full power"></div>
+          <div class="over" title="Dizzy zone"></div>
+        </div>
+        <div class="meter-foot"><span>SPINS <b id="spinTxt" class="num">0.0</b></span><span id="dizzyTxt" class="dizzy" hidden>DIZZY!</span></div>
+      </div>
+      <div class="nose" id="nose" role="slider" aria-label="Nose angle (attitude)" aria-valuemin="-5" aria-valuemax="50" aria-valuenow="25" aria-keyshortcuts="ArrowUp ArrowDown W S" tabindex="0">
+        <svg viewBox="0 0 120 54" aria-hidden="true">
+          <line x1="6" y1="40" x2="114" y2="40" class="ref"/>
+          <g id="noseDisc" transform="translate(60 40)"><g id="noseRot"><ellipse rx="34" ry="4.5" cy="0" class="disc"/><ellipse rx="34" ry="4.5" cy="0" class="rim"/></g></g>
+          <path d="M0 0" id="noseArc" class="arc"/>
+          <text x="112" y="14" class="t" text-anchor="end">&#8593; NOSE</text>
+        </svg>
+        <div class="nose-txt"><b id="noseTxt" class="num">25&deg;</b><span id="aoaTxt" class="num dim">AoA -10&deg;</span></div>
+      </div>
+    </section>
+
+    <!-- release dial -->
+    <section class="dial" aria-label="Release timing dial">
+      <svg viewBox="-60 -60 120 120" aria-hidden="true">
+        <circle r="54" class="dial-bg"/>
+        <path id="dialWindow" class="win" d=""/>
+        <path id="dialSector" class="sec" d=""/>
+        <g id="needle"><line x1="0" y1="0" x2="0" y2="-50" class="needle"/><circle cx="0" cy="-50" r="4.5" class="needle-dot"/></g>
+        <circle r="3" fill="#f4f8ff"/>
+        <text y="-36" x="0" text-anchor="middle" class="dial-lab">RELEASE</text>
+      </svg>
+      <span id="dialState" class="num">WAIT</span>
+    </section>
+
+    <!-- hint chip -->
+    <div id="hint" class="hint" aria-hidden="true"><b>HOLD</b> to spin <i></i> release in the <em>green</em> <i></i> <b>&uarr;&darr;</b> nose angle</div>
+
+    <!-- announcer lower third -->
+    <section id="lt" class="lt" aria-label="Announcer" hidden>
+      <span id="ltTag" class="lt-tag">STADIUM ANNOUNCER</span>
+      <p id="ltText" role="status" aria-live="polite"></p>
+    </section>
+  </div>
+
+  <!-- how to play -->
+  <div id="howto" class="howto" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
+    <div class="howto-card">
+      <h1 id="howtoTitle">DISCUS<br /><em>DISASTER</em></h1>
+      <p class="sub">Ten seconds to learn. A lifetime to blame the wind.</p>
+      <ol class="steps">
+        <li>
+          <div class="anim a1" aria-hidden="true"><i class="finger"></i><i class="ringp"></i><i class="spinner"></i></div>
+          <b>1 &nbsp;HOLD</b><span>Press &amp; hold (Space, click, touch, <kbd>A</kbd>) to spin. Power builds with every turn.</span>
+        </li>
+        <li>
+          <div class="anim a2" aria-hidden="true"><svg viewBox="-60 -60 120 120"><circle r="54" class="dial-bg"/><path d="M-34.7 -41.4 A54 54 0 0 1 34.7 -41.4 L0 0 Z" class="win"/><g class="needle-anim"><line y2="-50" class="needle"/><circle cy="-50" r="5" class="needle-dot"/></g></svg></div>
+          <b>2 &nbsp;RELEASE IN THE GREEN</b><span>Let go as the needle crosses the window. Early = low &amp; right. Late = high &amp; left.</span>
+        </li>
+        <li>
+          <div class="anim a3" aria-hidden="true"><svg viewBox="0 0 120 60"><line x1="6" y1="44" x2="114" y2="44" class="ref"/><g transform="translate(60 44)"><g class="tilt"><ellipse rx="36" ry="5" class="disc"/></g></g></svg></div>
+          <b>3 &nbsp;TILT THE NOSE</b><span>Drag up/down (or <kbd>&uarr;</kbd><kbd>&darr;</kbd>) to set nose angle. Read the wind. Real lift &amp; drag decide the rest.</span>
+        </li>
+      </ol>
+      <p class="warn">Don&rsquo;t spin past 4 turns. Don&rsquo;t hit the pigeons. (Do hit the pigeons.)</p>
+      <button id="btnStart" type="button" class="primary big-btn">LET&rsquo;S THROW <kbd>SPACE</kbd></button>
+    </div>
+  </div>
+
+  <noscript><p style="color:#fff;padding:2rem;font-family:sans-serif">DISCUS DISASTER needs JavaScript and WebGL.</p></noscript>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "discus-disaster",
+  "version": "1.0.0",
+  "description": "A funny, physically serious 3D discus game. Static files, Three.js from a pinned CDN.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "python3 -m http.server 8137",
+    "test": "node --test tests/physics.test.mjs",
+    "smoke": "node tests/smoke.mjs"
+  }
+}
