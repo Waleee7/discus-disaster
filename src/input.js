@@ -43,6 +43,15 @@ export class Input {
         case 'KeyN':
           this.cb.action('next');
           break;
+        case 'KeyC':
+          if (!e.repeat) this.cb.action('camera');
+          break;
+        case 'KeyT':
+          if (!e.repeat) this.cb.action('technique');
+          break;
+        case 'KeyP':
+          if (!e.repeat) this.cb.action('player');
+          break;
         case 'Slash':
         case 'F1':
         case 'KeyI':
@@ -140,7 +149,8 @@ export class Input {
         if (this.held) this._release();
       }
       if (edge(2)) this.cb.action('replay');
-      if (edge(3)) this.cb.action('help');
+      if (edge(3)) this.cb.action('camera'); // Y
+      if (edge(4)) this.cb.action('help'); // LB
       if (edge(8)) this.cb.action('voice');
       if (edge(9)) this.cb.action('next');
       this.padPrev = p.buttons.map((x) => x.pressed);

@@ -190,6 +190,9 @@ export function buildThrower(persona = null) {
   g.userData = { shoulder: armR.sh, hand: armR.hand };
 
   const D = DEG;
+  // technique pose (techniques.js `pose`); the neutral style reproduces the original animation exactly
+  const NEUTRAL = { crouch: 1, spread: 0, lean: 0, arm: 0, bob: 1 };
+  let S = NEUTRAL;
   const set = (n, x = 0, y = 0, z = 0) => n.rotation.set(x, y, z);
   const stance = (hipY) => {
     hips.position.y = hipY;
@@ -198,6 +201,10 @@ export function buildThrower(persona = null) {
     group: g,
     hand: armR.hand,
     shoulder: armR.sh,
+    /** Bend the athlete for a technique: { crouch, spread, lean, arm, bob } (see techniques.js). No argument = neutral. */
+    setStyle(pose) {
+      S = { ...NEUTRAL, ...(pose || {}) };
+    },
     /** psi = heading in degrees (+ right), physics convention. */
     setFacing(psi) {
       g.rotation.y = -psi * DEG;
@@ -224,17 +231,17 @@ export function buildThrower(persona = null) {
      */
     spin(rot, p) {
       const w = rot * D;
-      const bob = Math.sin(w * 2 - 0.6) * 0.5 + 0.5; // two dips per turn
-      stance(0.93 - 0.08 * (0.3 + 0.7 * p) * bob);
-      const crouch = 0.35 + 0.35 * p * bob;
+      const bob = (Math.sin(w * 2 - 0.6) * 0.5 + 0.5) * S.bob; // two dips per turn
+      stance(0.93 - 0.08 * S.crouch * (0.3 + 0.7 * p) * bob);
+      const crouch = (0.35 + 0.35 * p * bob) * S.crouch;
       set(hips, 0, 0.18 * p, 0);
-      set(torso, 0.12 + 0.1 * p, -(0.25 + 0.55 * p), -0.12 * p);
+      set(torso, 0.12 + 0.1 * p + S.lean, -(0.25 + 0.55 * p), -0.12 * p);
       set(head, -0.05, 0.25 + 0.3 * p, 0.0);
-      set(legR.hip, crouch, 0, -0.26);
+      set(legR.hip, crouch, 0, -0.26 - S.spread);
       set(legR.knee, -crouch * 1.5, 0, 0);
-      set(legL.hip, crouch * 0.8, 0, 0.26);
+      set(legL.hip, crouch * 0.8, 0, 0.26 + S.spread);
       set(legL.knee, -crouch * 1.3, 0, 0);
-      set(armR.sh, 0, -(0.35 + 0.8 * p), 0.05 + 0.2 * p);
+      set(armR.sh, 0, -(0.35 + 0.8 * p), 0.05 + 0.2 * p + S.arm);
       set(armR.elbow, 0, -0.08, 0);
       set(armL.sh, 0, -(0.9 + 0.2 * p), -0.15);
       set(armL.elbow, 0, -0.9, 0);
@@ -245,15 +252,15 @@ export function buildThrower(persona = null) {
       const settle = easeOut((k - 0.35) / 0.65);
       stance(0.93 - 0.02 * (1 - e) + 0.05 * Math.sin(Math.PI * clamp01(k * 1.6)));
       set(hips, 0, 0.1 * (1 - e) + 0.3 * e, 0);
-      set(torso, 0.1 - 0.12 * e, -0.85 + 1.5 * e - 0.25 * settle, 0.1 * e);
+      set(torso, 0.1 - 0.12 * e + S.lean * (1 - e * 0.6), -0.85 + 1.5 * e - 0.25 * settle, 0.1 * e);
       set(head, -0.05, 0.3 - 0.5 * e, 0);
-      set(armR.sh, 0, -1.15 + 1.9 * e - 0.35 * settle, 0.05 + 0.55 * e);
+      set(armR.sh, 0, -1.15 + 1.9 * e - 0.35 * settle, 0.05 + 0.55 * e + S.arm);
       set(armR.elbow, 0, -0.08 + 0.1 * e, 0);
       set(armL.sh, 0, -1.0 + 1.4 * e, -0.2 - 0.3 * e);
       set(armL.elbow, 0, -0.9 + 0.9 * e, 0);
-      set(legL.hip, 0.2 + 0.1 * e, 0, 0.2);
+      set(legL.hip, 0.2 + 0.1 * e, 0, 0.2 + S.spread * 0.5);
       set(legL.knee, -0.3 - 0.2 * e, 0, 0);
-      set(legR.hip, -0.1 - 0.7 * e * (1 - settle * 0.6), 0, -0.2);
+      set(legR.hip, -0.1 - 0.7 * e * (1 - settle * 0.6), 0, -0.2 - S.spread * 0.5);
       set(legR.knee, -0.2 - 0.9 * e * (1 - settle * 0.6), 0, 0);
     },
     dispose() {

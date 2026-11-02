@@ -4,3 +4,4 @@ import './physics.test.mjs';
 import './announcer.test.mjs';
 import './modes.test.mjs';
 import './leaderboard.test.mjs';
+import './techniques.test.mjs';

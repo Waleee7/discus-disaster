@@ -4,6 +4,7 @@
 // mouth ~6 m wide and ~4.2 m in front of the circle centre, nets >= 4 m high at the mouth and ~5.5 m at the back.
 import * as THREE from 'three';
 import { CIRCLE_RADIUS } from '../physics.js';
+import { CAGE_LEFT, CAGE_RIGHT, MOUTH_GATES, REAR_GATE, gateEnd } from './cagegeom.js';
 import { makeCanvas, toTexture, paintPixels, makeNoise, mulberry32, GeoBuilder, mat4, clamp, lerp, smooth } from './util.js';
 
 const PAD_R = 2.2;
@@ -150,14 +151,12 @@ export function buildCage(ctx) {
   root.add(skirt);
 
   // --- cage -----------------------------------------------------------------------------------------------------
-  const R = 3.6;
-  const ang = (deg) => (deg * Math.PI) / 180;
-  const at = (deg) => new THREE.Vector3(R * Math.sin(ang(deg)), 0, R * Math.cos(ang(deg)));
-  const P = (x, z, h) => ({ p: new THREE.Vector3(x, 0, z), h });
-  // chains of posts, mouth -> back; the rear gate sits between -5 and 55 degrees
-  const left = [P(-3.0, -4.2, 4.4), P(-3.3, -2.1, 5.0), ...[-90, -62, -34, -5].map((d, i) => ({ p: at(d), h: 5.5 + (i === 3 ? 0.1 : 0) }))];
-  const right = [P(3.0, -4.2, 4.4), P(3.3, -2.1, 5.0), ...[90, 75, 55].map((d) => ({ p: at(d), h: 5.5 }))];
+  // posts and panels come from cagegeom.js (shared with the camera's net-collision test)
+  const V = (c) => ({ p: new THREE.Vector3(c.x, 0, c.z), h: c.h });
+  const left = CAGE_LEFT.map(V);
+  const right = CAGE_RIGHT.map(V);
   const chains = [left, right];
+  const ang = (deg) => (deg * Math.PI) / 180;
   const rnd = mulberry32(5);
 
   const metal = new GeoBuilder();
@@ -284,17 +283,15 @@ export function buildCage(ctx) {
     void m;
     panel(T(hinge, 0), T(e, 0), h - 0.1, h - 0.1, { dip: 0.015, bulge: 0.03, seed: hue, bottom: 0.2 });
   };
-  gateFrame(new THREE.Vector3(-3.0, 0, -4.2), -28, 2.0, 3.6, 41);
-  gateFrame(new THREE.Vector3(3.0, 0, -4.2), 28, 2.0, 3.6, 42);
-  // rear gate swung wide open (hinged at the -5 degree post, resting at roughly 105 degrees open)
+  MOUTH_GATES.forEach((g, i) => gateFrame(new THREE.Vector3(g.hinge.x, 0, g.hinge.z), g.deg, g.w, g.h, 41 + i));
+  // rear gate swung open and folded back along the left net (small and low on purpose: the ready shot looks past it)
   {
-    const hinge = left[5].p;
-    const w = 2.6;
-    const dirv = new THREE.Vector3(-0.97, 0, 0.24).normalize(); // folded back along the left net, clear of the broadcast camera
-    const e = hinge.clone().addScaledVector(dirv, w);
-    const h = 4.6;
+    const hinge = new THREE.Vector3(REAR_GATE.hinge.x, 0, REAR_GATE.hinge.z);
+    const ge = gateEnd(REAR_GATE);
+    const e = new THREE.Vector3(ge.x, 0, ge.z);
+    const h = REAR_GATE.h;
     const T = (v, y) => new THREE.Vector3(v.x, y, v.z);
-    const rail = (a, b, r = 0.025) => {
+    const rail = (a, b, r = 0.02) => {
       const g = new THREE.CylinderGeometry(r, r, a.distanceTo(b), 6);
       const m = new THREE.Matrix4().lookAt(a, b, new THREE.Vector3(0, 1, 0));
       m.multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2));
@@ -304,12 +301,9 @@ export function buildCage(ctx) {
     };
     rail(T(hinge, 0.14), T(e, 0.14));
     rail(T(hinge, h), T(e, h));
-    rail(T(hinge, 0.14), T(hinge, h));
     rail(T(e, 0.14), T(e, h));
-    rail(T(hinge, 0.14), T(e, h), 0.013);
-    rail(T(e, 0.14), T(hinge, h), 0.013);
-    metal.add(new THREE.CylinderGeometry(0.04, 0.04, h, 8), mat4(e.x, h / 2, e.z), steel);
-    metal.add(new THREE.CylinderGeometry(0.075, 0.075, 0.04, 10), mat4(e.x, 0.075, e.z, 0, 1, 1, 1, 0, Math.PI / 2), darkSteel);
+    metal.add(new THREE.CylinderGeometry(0.035, 0.035, h, 8), mat4(e.x, h / 2, e.z), steel);
+    metal.add(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 10), mat4(e.x, 0.07, e.z, 0, 1, 1, 1, 0, Math.PI / 2), darkSteel);
     ctx.contacts.push([e.x, e.z, 0.6, 0.45, 0, 0.35]);
     panel(T(hinge, 0), T(e, 0), h - 0.1, h - 0.1, { dip: 0.02, bulge: 0.05, seed: 43, bottom: 0.2 });
   }

@@ -7,7 +7,8 @@ import {
   ribbonGeo, sweepRing, ringPoint, ringNormal, ringArc, mulberry32,
 } from './util.js';
 
-const FONT = '700 {S}px Impact, "Arial Black", "Arial Narrow", sans-serif';
+// Signage uses the page's Oswald; main.js waits for document.fonts before the stadium is painted (Impact only as a fallback)
+const FONT = '700 {S}px Oswald, Impact, "Arial Black", "Arial Narrow", sans-serif';
 export const font = (px) => FONT.replace('{S}', px);
 
 const INFIELD = { x0: -ARENA.b, w: ARENA.b * 2, z0: -(ARENA.cx + ARENA.a), d: ARENA.a * 2 };
@@ -283,26 +284,26 @@ export function buildField(ctx) {
       g.fillRect(x - rad, z - rad, rad * 2, rad * 2);
     }
     // divots: dark soil crescent + torn lighter rim + a flap of turf
-    for (let i = 0; i < 75; i++) {
+    for (let i = 0; i < 38; i++) {
       const [x, z] = pick();
-      const L = 0.22 + r() * 0.5;
+      const L = 0.2 + r() * 0.5;
       const Wd = L * (0.35 + r() * 0.3);
       const a = (r() - 0.5) * 0.7 + Math.PI / 2; // long axis roughly along the throw
       g.save();
       g.translate(x, z);
       g.rotate(a);
-      g.fillStyle = 'rgba(30,20,12,0.28)';
+      g.fillStyle = 'rgba(30,22,14,0.12)';
       g.beginPath();
       g.ellipse(0.02, 0.02, L * 0.62, Wd * 0.62, 0, 0, Math.PI * 2);
       g.fill();
-      g.fillStyle = `rgba(${52 + r() * 18},${38 + r() * 10},${24 + r() * 8},0.92)`;
+      g.fillStyle = `rgba(${54 + r() * 14},${44 + r() * 8},${28 + r() * 6},0.46)`;
       g.beginPath();
       g.ellipse(0, 0, L * 0.5, Wd * 0.5, 0, 0, Math.PI * 2);
       g.fill();
-      g.strokeStyle = 'rgba(112,128,64,0.55)';
-      g.lineWidth = 0.035;
+      g.strokeStyle = 'rgba(96,108,62,0.2)';
+      g.lineWidth = 0.025;
       g.stroke();
-      g.fillStyle = `rgba(${34 + r() * 8},${66 + r() * 10},${30},0.85)`;
+      g.fillStyle = `rgba(${40 + r() * 8},${62 + r() * 8},${34},0.3)`;
       g.beginPath();
       g.ellipse(L * 0.5, 0, L * 0.26, Wd * 0.36, 0.3, 0, Math.PI * 2);
       g.fill();

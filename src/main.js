@@ -1,6 +1,18 @@
 import { Game } from './game.js';
 import { makeLayout } from './obstacles.js';
 
+// The stadium paints its signage and jersey numbers into canvases once, at build time: wait for the webfonts first so
+// they use Oswald, not the fallback. Bounded (and failure-proof) so an offline / blocked font host never blocks the game.
+async function fontsReady(ms = 2500) {
+  if (!document.fonts || !document.fonts.load) return;
+  const load = Promise.all([
+    document.fonts.load('700 48px Oswald', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'),
+    document.fonts.load('700 40px "JetBrains Mono"', '0123456789.m'),
+  ]).catch(() => {});
+  await Promise.race([load.then(() => document.fonts.ready), new Promise((r) => setTimeout(r, ms))]);
+}
+await fontsReady();
+
 const canvas = document.getElementById('gl');
 const game = new Game(canvas);
 game.start();
@@ -30,6 +42,8 @@ window.__debug = {
   skipIntro: () => game.closeStart(true),
   setMode: (id) => game.setMode(id),
   setPersona: (id) => game.setPersona(id),
+  setTechnique: (id) => game.setTechnique(id),
+  setCamera: (id) => game.setCamera(id),
   press: () => game.input._press(),
   release: () => game.input._release(),
   manual: (on = true) => (game.manual = on),

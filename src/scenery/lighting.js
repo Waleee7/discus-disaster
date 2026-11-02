@@ -36,13 +36,13 @@ export function buildLighting(ctx) {
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
-      uniforms: { uI: { value: 0.07 }, uCol: { value: new THREE.Color(0xffe0b0) } },
+      uniforms: { uI: { value: 0.1 }, uCol: { value: new THREE.Color(0xffe0b0) } },
       vertexShader: `varying vec3 vN; varying vec3 vV; varying float vA;
         void main(){ vec4 mv = modelViewMatrix*vec4(position,1.0); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); vA = clamp(-position.y/105.0, 0.0, 1.0); gl_Position = projectionMatrix*mv; }`,
       fragmentShader: `uniform float uI; uniform vec3 uCol; varying vec3 vN; varying vec3 vV; varying float vA;
         void main(){ float f = pow(abs(dot(normalize(vN), normalize(vV))), 2.2);
           float a = uI * f * pow(1.0 - vA, 1.6) * smoothstep(0.0, 0.06, vA);
-          gl_FragColor = vec4(uCol * a, a); }`,
+          gl_FragColor = vec4(uCol, a); }`,
     }),
   );
   const beamGeo = new THREE.ConeGeometry(26, 105, 24, 1, true);

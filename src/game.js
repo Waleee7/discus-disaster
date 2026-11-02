@@ -19,8 +19,10 @@ import { buildObstacles, makeLayout } from './obstacles.js';
 import { Announcer, rankFor } from './announcer.js';
 import { Haptics } from './haptics.js';
 import { Input } from './input.js';
-import { DIZZY_TURNS, STEPOUT_TURNS, powerOf, speedOf, releaseAngleOf } from './tuning.js';
-import { MODES, modeOf, windowHalfFor, powerFor, releaseParams, assistNose, HEAD_FACTOR_PRO } from './modes.js';
+import { STEPOUT_TURNS, powerOf, speedOf, releaseAngleOf } from './tuning.js';
+import { MODES, modeOf, powerFor, releaseParams, assistTarget, chargeProfile, overchargeOf, effectiveWindow, wobbleOf, previewFlight, HEAD_FACTOR_PRO, NOSE_MIN, NOSE_MAX } from './modes.js';
+import { TECHNIQUES, techniqueOf, isTechnique, DEFAULT_TECHNIQUE } from './techniques.js';
+import { presetOf, nextPreset, isPreset, DEFAULT_PRESET, clearCamera } from './camera.js';
 import { PERSONAS, personaOf, personaIndex, rivalOf, rivalMark } from './personas.js';
 import { Leaderboard, ALL_TIME, dailyBoardId, dateKey, dailyLayoutSeed, dailySeed, shareText } from './leaderboard.js';
 import { store } from './storage.js';
@@ -37,11 +39,10 @@ const TAPE_DUR = 1.1;
 const SLOW_SCALE = 0.3;
 const SKIP_GRACE = 0.35; // a press this soon after release is the release itself (key bounce), not a skip
 const HEAD_FACTOR = HEAD_FACTOR_PRO; // pro: dial angle -> throw heading (window edge == sector edge)
-const OVERLAYS = ['start', 'help', 'board', 'initials']; // states that are a modal screen over the stadium
+const OVERLAYS = ['start', 'help', 'board', 'initials', 'tech']; // states that are a modal screen over the stadium
 const UNDER = ['help', 'board', 'initials']; // overlays that sit on top of whatever state was current
+const DEMO_LOOP = 4.8; // technique demo loop (seconds)
 const MULT_CAP = 9;
-const NOSE_MIN = -5;
-const NOSE_MAX = 50;
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const wrap180 = (a) => ((((a + 180) % 360) + 360) % 360) - 180;
@@ -79,10 +80,18 @@ export class Game {
     this.modeId = store.get('dd-mode') === 'pro' ? 'pro' : 'rookie';
     this.mode = modeOf(this.modeId);
     this.personaId = personaOf(store.get('dd-char')).id;
+    this.camId = isPreset(store.get('dd-cam')) ? store.get('dd-cam') : DEFAULT_PRESET;
+    this.techId = isTechnique(store.get('dd-tech')) ? store.get('dd-tech') : DEFAULT_TECHNIQUE;
+    this.tech = techniqueOf(this.techId);
+    this.camBlend = 0; // seconds of extra-gentle camera motion after switching presets
+    this.toastUntil = 0;
+    this.demo = null; // technique-picker demo loop state
+    this.flights = {}; // cached still-air flights per technique (picker sketches + demo disc)
     this.daily = false;
     this.dKey = dateKey();
     this.runKey = null; // mode of the run in progress (null = no run yet)
-    this.windowHalf = windowHalfFor(this.mode, 0);
+    this.windowHalf = effectiveWindow(this.mode, 0, 0, this.tech);
+    this.dialDrawn = -1;
     this.noseManual = false;
     this.noseDrag = 0;
     this.assistAtt = 25;
@@ -124,6 +133,7 @@ export class Game {
     this.debris = new Debris(this.scene);
     this.obstacles = buildObstacles(this.scene, { particles: this.particles, debris: this.debris });
     this.thrower = buildThrower(personaOf(this.personaId));
+    this.thrower.setStyle(this.tech.pose);
     this.scene.add(this.thrower.group);
     this.rival = buildRivalMarker();
     this.scene.add(this.rival.group);
@@ -189,6 +199,19 @@ export class Game {
       btnHaptics: $('btnHaptics'),
       replayTag: $('replayTag'),
       replayInfo: $('replayInfo'),
+      btnCam: $('btnCam'),
+      camName: $('camName'),
+      camToast: $('camToast'),
+      btnTech: $('btnTech'),
+      techName: $('techName'),
+      techDot: $('techDot'),
+      btnSwap: $('btnSwap'),
+      tech: $('tech'),
+      techList: $('techList'),
+      techInfo: $('techInfo'),
+      powerState: $('powerState'),
+      zoneSweet: $('zoneSweet'),
+      zoneOver: $('zoneOver'),
     };
     $('dialSector').setAttribute('d', 'M0 -54 L0 -40');
     this.setDial();
@@ -216,7 +239,10 @@ export class Game {
     this.updateNose();
     this.setReadyVisuals();
     this.updateHudStatic();
+    this.buildTechList();
     this.applyModeUi();
+    this.applyCamUi();
+    this.applyTechUi();
     this.updateCarousel();
     this.updateRival();
     this.openStart(true);
@@ -244,6 +270,12 @@ export class Game {
     click($('charNext'), () => this.cycleCharacter(1));
     click($('modeRookie'), () => this.setMode('rookie'));
     click($('modePro'), () => this.setMode('pro'));
+    click(d.btnCam, () => this.onAction('camera'));
+    click(d.btnTech, () => this.onAction('technique'));
+    click(d.btnSwap, () => this.onAction('player'));
+    click($('techDone'), () => this.closeTech());
+    click($('techPrev'), () => this.cycleCharacter(-1));
+    click($('techNext'), () => this.cycleCharacter(1));
     click($('btnBoard'), () => this.openBoard(ALL_TIME));
     click($('btnBoard2'), () => this.openBoard(this.daily ? 'daily' : ALL_TIME));
     click($('btnShare'), () => this.shareResult());
@@ -290,7 +322,11 @@ export class Game {
     d.windCross.textContent = `CROSS ${Math.abs(l.wind.z).toFixed(1)} ${l.wind.z >= 0 ? '→' : '←'}`;
     d.windArrow.querySelector('.arrow').style.transform = `rotate(${Math.atan2(l.wind.z, l.wind.x) / DEG}deg)`;
     // Rookie nose assist: the nose angle the auto-nose will ease toward for this wind (a typical good release)
-    this.assistAtt = assistNose({ speed: speedOf(0.9), releaseAngle: 33, heading: 0, wind: l.wind });
+    this.updateAssist();
+  }
+
+  updateAssist() {
+    this.assistAtt = assistTarget(this.mode, this.tech, this.layout.wind);
   }
 
   setState(s) {
@@ -309,6 +345,7 @@ export class Game {
   // ------------------------------------------------------------------ mode, characters, rival
   setDial() {
     const w = this.windowHalf;
+    this.dialDrawn = w;
     const r = 54;
     const p = (a) => `${(r * Math.sin(a * DEG)).toFixed(2)} ${(-r * Math.cos(a * DEG)).toFixed(2)}`;
     $('dialWindow').setAttribute('d', `M0 0 L${p(-w)} A${r} ${r} 0 0 1 ${p(w)} Z`);
@@ -321,8 +358,18 @@ export class Game {
     $('modePro').setAttribute('aria-checked', String(this.modeId === 'pro'));
     $('modeBlurb').textContent = this.mode.blurb;
     this.dom.noseLbl.textContent = this.mode.noseAssist && !this.noseManual ? 'NOSE · AUTO' : 'NOSE ANGLE';
-    this.windowHalf = windowHalfFor(this.mode, this.attempt);
+    this.windowHalf = effectiveWindow(this.mode, this.attempt, 0, this.tech);
     this.setDial();
+    this.updateZones();
+  }
+
+  /** Charge meter zones for this mode + technique: SWEET (green bracket) and OVERCHARGE (red hatch), as % of the bar. */
+  updateZones() {
+    const pr = chargeProfile(this.mode, this.tech);
+    this.dom.zoneSweet.style.left = `${((pr.sweetFrom / pr.stepOut) * 100).toFixed(1)}%`;
+    this.dom.zoneSweet.style.width = `${(((pr.sweetTo - pr.sweetFrom) / pr.stepOut) * 100).toFixed(1)}%`;
+    this.dom.zoneOver.style.left = `${((pr.overFrom / pr.stepOut) * 100).toFixed(1)}%`;
+    this.dom.zoneOver.style.right = '0';
   }
 
   setMode(id) {
@@ -339,6 +386,209 @@ export class Game {
     this.updateRival();
   }
 
+  // ------------------------------------------------------------------ technique, camera, athlete swap
+  setTechnique(id) {
+    if (!isTechnique(id)) return;
+    this.techId = id;
+    this.tech = techniqueOf(id);
+    store.set('dd-tech', id);
+    this.thrower.setStyle(this.tech.pose);
+    this.applyModeUi();
+    this.updateAssist();
+    this.applyTechUi();
+    if (this.demo) this.demo = { t: 0 };
+  }
+
+  applyTechUi() {
+    const t = this.tech;
+    this.dom.techName.textContent = t.name.toUpperCase();
+    this.dom.btnTech.setAttribute('aria-label', `Throwing technique: ${t.name}`);
+    this.dom.techList.querySelectorAll('.tc').forEach((b) => {
+      const on = b.dataset.id === t.id;
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    const pct = (v) => `${v >= 1 ? '+' : '\u2212'}${Math.abs(Math.round((v - 1) * 100))}%`;
+    const deg = (v) => `${v >= 0 ? '+' : '\u2212'}${Math.abs(v)}\u00b0`;
+    const bits = [];
+    if (t.speed !== 1) bits.push(`SPEED ${pct(t.speed)}`);
+    if (t.angle) bits.push(`RELEASE ANGLE ${deg(t.angle)}`);
+    if (t.nose) bits.push(`NOSE ${deg(t.nose)}`);
+    if (t.window !== 1) bits.push(`GREEN WINDOW ${pct(t.window)}`);
+    if (t.turns !== 1) bits.push(`TURNS TO FULL POWER ${pct(t.turns)}`);
+    this.dom.techInfo.innerHTML = `<span><b class="up">${t.up}</b>${t.down ? ` <b class="dn">${t.down}</b>` : ''} &nbsp;${t.blurb}</span><span class="num">${bits.join(' \u00b7 ') || 'NO BONUS, NO PENALTY'}</span>`;
+  }
+
+  /** Cached still-air flight of a perfect release with a technique (Pro mapping, so the sketches compare like for like). */
+  flightOf(t) {
+    return (this.flights[t.id] = this.flights[t.id] || previewFlight(MODES.pro, t));
+  }
+
+  buildTechList() {
+    const list = this.dom.techList;
+    list.innerHTML = '';
+    const SX = 92 / 72;
+    const SY = 38 / 17;
+    TECHNIQUES.forEach((t) => {
+      const fl = this.flightOf(t);
+      const pts = [];
+      for (const s of fl.samples) {
+        const x = 2 + s[1] * SX;
+        if (x > 94) break;
+        pts.push([x, Math.min(44, 44 - s[2] * SY)]);
+      }
+      const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+      let apex = pts[0];
+      for (const q of pts) if (q[1] < apex[1]) apex = q;
+      const dot = this.reducedMotion
+        ? `<circle class="dot" r="2.6" cx="${apex[0].toFixed(1)}" cy="${apex[1].toFixed(1)}"/>`
+        : `<circle class="dot" r="2.6"><animateMotion dur="2.4s" repeatCount="indefinite" path="${d}"/></circle>`;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tc';
+      b.setAttribute('role', 'radio');
+      b.dataset.id = t.id;
+      b.innerHTML = `<span class="tc-name">${t.name.toUpperCase()}</span><span class="tc-tags"><i class="up">${t.up}</i>${t.down ? `<i class="dn">${t.down}</i>` : ''}</span><svg class="tc-arc" viewBox="0 0 96 46" aria-hidden="true"><line class="ground" x1="2" y1="44.5" x2="94" y2="44.5"/><path class="path" d="${d}"/>${dot}</svg>`;
+      b.addEventListener('click', () => this.setTechnique(t.id));
+      list.appendChild(b);
+    });
+  }
+
+  openTech() {
+    if (this.state !== 'ready') return;
+    this.under = 'ready';
+    this.prevState = 'ready';
+    this.announcer.clear();
+    this.dom.tech.hidden = false;
+    this.setState('tech');
+    this.demo = { t: 0 };
+    this.camSnap = 0;
+    const on = this.dom.techList.querySelector('.tc[aria-checked="true"]');
+    if (on) on.focus({ preventScroll: true });
+  }
+
+  closeTech() {
+    if (this.state !== 'tech') return;
+    this.dom.tech.hidden = true;
+    this.demo = null;
+    this.dom.techDot.hidden = true;
+    store.set('dd-tech-seen', '1');
+    this.setState('ready');
+    this.setReadyVisuals();
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+  }
+
+  /** One loop of the selected technique, performed by the in-game athlete in the circle (the camera frames it beside the card). */
+  updateDemo(dt) {
+    const d = this.demo || (this.demo = { t: 0 });
+    d.t += dt;
+    const t = d.t % DEMO_LOOP;
+    const tech = this.tech;
+    const th = this.thrower;
+    const T0 = 0.5;
+    const T1 = tech.demoTurn > 200 ? 3.0 : 1.5;
+    const k = (t - T1) / 0.95;
+    if (t < T0) {
+      th.setFacing(180);
+      th.idle(this.clock);
+      this.demoDiscus(true);
+    } else if (t < T1) {
+      const u = (t - T0) / (T1 - T0);
+      const rot = tech.demoTurn * Math.pow(u, 1.5);
+      th.setFacing(180 - rot);
+      th.spin(rot, 0.3 + 0.7 * u);
+      this.demoDiscus(true);
+    } else {
+      th.setFacing(180 - tech.demoTurn);
+      th.release(Math.min(1, k));
+      this.demoDiscus(false, t - T1);
+    }
+  }
+
+  /** Keep the disc in the hand, or (after the release) fly it down the technique's real still-air trajectory, time-stretched. */
+  demoDiscus(inHand, since = 0) {
+    const dg = this.discus.group;
+    if (inHand) {
+      if (dg.parent !== this.thrower.hand) {
+        dg.removeFromParent();
+        this.thrower.hand.add(dg);
+      }
+      dg.visible = true;
+      dg.position.set(0, 0, 0);
+      dg.quaternion.identity();
+      dg.rotation.set(this.attitude * DEG, 0, 0);
+      this.glow.visible = false;
+      this.demoStart = null;
+      return;
+    }
+    if (dg.parent === this.thrower.hand) {
+      this.demoStart = this.thrower.hand.getWorldPosition(new THREE.Vector3());
+      dg.removeFromParent();
+      this.scene.add(dg);
+    }
+    const S = this.flightOf(this.tech).samples; // 20 Hz samples [t, x, y, z, ...]; played 2.2x slower than real
+    const fi = since * 2.2 * 20;
+    const i = Math.min(S.length - 2, Math.floor(fi));
+    const f = clamp(fi - i, 0, 1);
+    const L = (j) => S[i][j] + (S[i + 1][j] - S[i][j]) * f - S[0][j];
+    const o = this.demoStart || new THREE.Vector3();
+    const q = toThree(L(1), L(2), L(3));
+    dg.position.set(o.x + q.x, o.y + q.y, o.z + q.z);
+    dg.rotation.set(0.3, 0, 0);
+    this.discus.body.rotation.y += 0.5;
+    dg.visible = fi < S.length - 2 && since < 1.7;
+  }
+
+  setCamera(id) {
+    if (!isPreset(id)) return;
+    const changed = id !== this.camId;
+    this.camId = id;
+    store.set('dd-cam', id);
+    this.applyCamUi();
+    if (changed) {
+      this.camBlend = 1.2;
+      if (this.reducedMotion) this.camSnap = 2; // reduced motion: cut to the new view instead of gliding
+      this.toast(presetOf(id).name);
+    }
+  }
+
+  cycleCamera(dir = 1) {
+    this.setCamera(nextPreset(this.camId, dir));
+  }
+
+  applyCamUi() {
+    const p = presetOf(this.camId);
+    this.dom.camName.textContent = p.name;
+    this.dom.btnCam.setAttribute('aria-label', `Camera: ${p.name}. Press to change view`);
+    this.dom.btnCam.title = `Camera: ${p.name} (C)`;
+    document.body.dataset.cam = p.id;
+  }
+
+  toast(text) {
+    this.dom.camToast.textContent = text;
+    this.toastUntil = this.clock + 1.6;
+  }
+
+  /** Swap the athlete between throws (result card, ready, or the technique picker); the rival flag follows. */
+  swapAthlete() {
+    if (!['ready', 'result', 'tech'].includes(this.state)) return;
+    this.cycleCharacter(1);
+    if (this.state === 'result') this.refreshResult();
+    if (this.state === 'tech') return;
+    const p = personaOf(this.personaId);
+    this.announcer.show(`${p.name} steps in. Beat the ${this.rivalInfo.name} flag: ${this.rivalInfo.mark.toFixed(1)} m.`, p.name, 2, 3400);
+  }
+
+  /** Re-render the result card for the same throw (the rival chip depends on the athlete). */
+  refreshResult() {
+    const c = this.cur;
+    if (!c || !c.rec.result) return;
+    const rr = c.rec.result;
+    this.showResult(c.rec);
+    this.dom.resDist.textContent = rr.foul ? 'FOUL' : fmt(rr.distance);
+    if (!rr.foul) this.dom.resFeet.textContent = formatFeetInches(rr.distance);
+  }
+
   setPersona(id) {
     const p = personaOf(id);
     this.personaId = p.id;
@@ -349,6 +599,7 @@ export class Game {
     if (inHand) this.discus.group.removeFromParent(); // the discus is shared: never dispose it with the old athlete
     old.dispose();
     this.thrower = buildThrower(p);
+    this.thrower.setStyle(this.tech.pose);
     this.scene.add(this.thrower.group);
     if (inHand) {
       this.thrower.hand.add(this.discus.group);
@@ -358,6 +609,7 @@ export class Game {
     }
     this.thrower.setFacing(180);
     this.thrower.idle(this.clock);
+    if (this.state === 'result' || this.state === 'final') this.restoreThrower(this.state);
     this.updateCarousel();
     this.updateRival();
   }
@@ -375,6 +627,8 @@ export class Game {
     $('charBlurb').textContent = p.blurb;
     $('charSwatch').style.background = p.css;
     this.dom.start.style.setProperty('--char', p.css);
+    $('techAth').textContent = p.name;
+    this.dom.tech.firstElementChild.style.setProperty('--char', p.css);
   }
 
   /** The "beat the rival" flag: the next athlete round the carousel, at their best mark for this mode. */
@@ -408,6 +662,9 @@ export class Game {
       case 'initials':
         this.saveInitials();
         break;
+      case 'tech':
+        this.closeTech();
+        break;
       default:
     }
   }
@@ -435,6 +692,13 @@ export class Game {
     const st = this.state;
     if (st === 'start' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
       this.cycleCharacter(e.code === 'ArrowLeft' ? -1 : 1);
+      e.preventDefault();
+    } else if (st === 'tech' && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) {
+      const i = TECHNIQUES.findIndex((t) => t.id === this.techId);
+      const n = TECHNIQUES.length;
+      this.setTechnique(TECHNIQUES[(i + (e.code === 'ArrowLeft' || e.code === 'ArrowUp' ? -1 : 1) + n) % n].id);
+      const on = this.dom.techList.querySelector('.tc[aria-checked="true"]');
+      if (on) on.focus({ preventScroll: true });
       e.preventDefault();
     } else if (st === 'board' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
       this.showBoardTab(this.boardTab === ALL_TIME ? 'daily' : ALL_TIME);
@@ -475,6 +739,16 @@ export class Game {
         if (this.best && ['ready', 'result'].includes(this.state)) this.startReplay(this.best.rec);
         else if (this.state === 'replay') this.endReplay();
         break;
+      case 'camera':
+        if (['ready', 'spin', 'flight', 'replay'].includes(this.state)) this.cycleCamera();
+        break;
+      case 'technique':
+        if (this.state === 'ready') this.openTech();
+        else if (this.state === 'tech') this.closeTech();
+        break;
+      case 'player':
+        this.swapAthlete();
+        break;
       case 'next':
         if (this.state === 'result' || this.state === 'final') this.next();
         else if (this.state === 'start') this.closeStart();
@@ -492,6 +766,7 @@ export class Game {
         else if (this.state === 'board') this.closeBoard();
         else if (this.state === 'initials') this.skipInitials();
         else if (this.state === 'replay') this.endReplay();
+        else if (this.state === 'tech') this.closeTech();
         else if (this.state === 'start' && this.runKey) this.closeStart();
         else if (['ready', 'result', 'final'].includes(this.state)) this.openStart();
         break;
@@ -591,6 +866,7 @@ export class Game {
     this.discus.group.position.set(0, 0, 0);
     this.discus.group.quaternion.identity();
     this.discus.group.rotation.set(this.attitude * DEG, 0, 0);
+    this.discus.group.visible = true;
     this.glow.visible = false;
     this.shadow.visible = false;
     this.tape.hide();
@@ -636,8 +912,6 @@ export class Game {
       this.tO = 4 + this.attempt * 9;
     }
     this.applyLayout(makeLayout(seed ?? ++this.seedBase));
-    this.windowHalf = windowHalfFor(this.mode, this.attempt);
-    this.setDial();
     this.applyModeUi();
     this.setReadyVisuals();
     this.updatePips();
@@ -684,7 +958,7 @@ export class Game {
   // ------------------------------------------------------------------ spin
   startSpin() {
     this.setState('spin');
-    this.spin = { rot: 0, t: 0, tickN: 0, psi: 180, psiVis: 180, power: 0, dizzy: 0, announced: new Set() };
+    this.spin = { rot: 0, t: 0, tickN: 0, psi: 180, psiVis: 180, power: 0, dizzy: 0, announced: new Set(), prof: chargeProfile(this.mode, this.tech) };
     this.dom.hint.classList.add('off');
     this.flashNow(null);
     this.announcer.say('spin', {}, { priority: 1, ms: 2200 });
@@ -694,18 +968,24 @@ export class Game {
   updateSpin(dt) {
     const s = this.spin;
     const m = this.mode;
-    const p = powerFor(m, s.rot);
+    const tech = this.tech;
+    const prof = s.prof;
+    const p = powerFor(m, s.rot, tech);
     let rate = 260 + 240 * p;
     // Rookie: the needle eases down while it is inside the green, so there is time to react (power still follows rot)
     if (m.needleSlow) rate *= 1 - m.needleSlow * smooth((this.windowHalf + 14 - Math.abs(s.psi)) / 14);
     s.rot += rate * dt;
     s.t += dt;
-    const dizzyK = smooth((s.rot / 360 - DIZZY_TURNS) / (STEPOUT_TURNS - DIZZY_TURNS));
-    const wobble = dizzyK * 14 * Math.sin(s.t * 19);
+    // CHARGE: build -> sweet spot -> overcharge. Past the sweet spot the green window shrinks and the needle shakes.
+    const over = overchargeOf(m, s.rot, tech);
+    const wobble = wobbleOf(m, s.rot, tech) * Math.sin(s.t * 19);
+    this.windowHalf = effectiveWindow(m, this.attempt, s.rot, tech);
     s.psi = wrap180(180 - s.rot);
     s.psiVis = s.psi + wobble;
-    s.power = powerFor(m, s.rot);
-    s.dizzy = dizzyK;
+    s.power = powerFor(m, s.rot, tech);
+    s.dizzy = over;
+    const turns = s.rot / 360;
+    s.zone = turns >= prof.overFrom ? 'over' : turns >= prof.sweetFrom ? 'sweet' : 'build';
     const inW = Math.abs(s.psiVis) <= this.windowHalf;
     if (inW && !s.wasIn) this.haptics.tick(0.2); // a small tick as the needle enters the green
     s.wasIn = inW;
@@ -714,19 +994,19 @@ export class Game {
       s.tickN = half;
       this.haptics.tick(s.power);
     }
-    if (s.rot / 360 >= m.fullTurns && !s.announced.has('sweet')) {
+    if (turns >= prof.sweetFrom && !s.announced.has('sweet')) {
       s.announced.add('sweet');
       this.announcer.say('sweet', {}, { priority: 2, ms: 2000 });
       this.haptics.perfect();
     }
-    if (s.rot / 360 >= DIZZY_TURNS && !s.announced.has('dizzy')) {
+    if (turns >= prof.overFrom && !s.announced.has('dizzy')) {
       s.announced.add('dizzy');
       this.announcer.say('dizzy', {}, { priority: 2, ms: 2000 });
     }
     this.thrower.setFacing(s.psiVis);
     this.thrower.spin(s.rot, s.power);
-    this.shake = Math.max(this.shake, s.power * 0.035 + dizzyK * 0.06);
-    if (s.rot / 360 >= STEPOUT_TURNS) this.stepOut();
+    this.shake = Math.max(this.shake, s.power * 0.035 + over * 0.06);
+    if (turns >= STEPOUT_TURNS) this.stepOut();
   }
 
   /**
@@ -738,7 +1018,7 @@ export class Game {
     const psi = Number.isFinite(s.psiVis) ? s.psiVis : 180;
     const p = Number.isFinite(s.power) ? s.power : 0;
     const auto = this.mode.noseAssist && !this.noseManual;
-    const { params, meta } = releaseParams(this.mode, { psi, rot: Number.isFinite(s.rot) ? s.rot : 0, power: p, attitude: auto ? 'auto' : this.attitude, wind: this.layout.wind, attempt: this.attempt });
+    const { params, meta } = releaseParams(this.mode, { psi, rot: Number.isFinite(s.rot) ? s.rot : 0, power: p, attitude: auto ? 'auto' : this.attitude, wind: this.layout.wind, attempt: this.attempt, technique: this.tech });
     if (auto && Number.isFinite(params.attitude)) {
       params.attitude = clamp(params.attitude, NOSE_MIN, NOSE_MAX);
       this.attitude = params.attitude;
@@ -747,6 +1027,8 @@ export class Game {
     if (meta.perfect) {
       this.flashNow('PERFECT', 'dead-centre release', 'perfect');
       this.haptics.perfect();
+    } else if (meta.over > 0.3 && !meta.short) {
+      this.flashNow('OVERCHARGED', 'the green shrank and the needle shook', 'foul');
     }
     this.launch(params, { ...meta, power: p, psi });
   }
@@ -782,6 +1064,8 @@ export class Game {
       hits: [],
       attempt: this.attempt,
     };
+    meta = { technique: this.techId, ...meta };
+    rec.meta = meta;
     this.cur = { f, rec, acc: 0, steps: 0, landedT: 0, stage: 'air', rng: mulberry32(this.layout.seed + 1) };
     this.pushSample(f, rec);
     this.spin = null;
@@ -1049,6 +1333,7 @@ export class Game {
     };
     const OBS = { pigeon: 'PIGEON', cart: 'COACH CART', vendor: 'HOT DOG', sprinkler: 'SPRINKLER', jumbotron: 'JUMBOTRON' };
     const MULTS = { pigeon: 1.5, cart: 2.5, vendor: 2, sprinkler: 1.25, jumbotron: 3 };
+    chip(`${personaOf(this.personaId).name} <b>${techniqueOf(rec.meta && rec.meta.technique).name.toUpperCase()}</b>`, 'who');
     rec.hits.forEach((h) => chip(`${OBS[h]} <b>x${MULTS[h]}</b>`));
     if (!rr.foul) chip(`${mult > 1 ? `${rr.distance.toFixed(1)} x ${mult.toFixed(2).replace(/\.?0+$/, '')} = ` : ''}<b>${pts} PTS</b>`, 'total');
     if (!rr.foul && this.rivalInfo) {
@@ -1399,13 +1684,18 @@ export class Game {
     const p = spin ? this.spin.power : 0;
     const showMeters = spin || this.state === 'ready';
     if (spin) {
-      d.powerFill.style.width = `${(p * 100).toFixed(0)}%`;
-      d.powerFill.className = 'fill' + (this.spin.dizzy > 0.02 ? ' dizzy' : p >= 0.999 ? ' full' : '');
+      const pr = this.spin.prof;
+      const zone = this.spin.zone;
+      d.powerFill.style.width = `${(clamp(this.spin.rot / 360 / pr.stepOut, 0, 1) * 100).toFixed(1)}%`;
+      d.powerFill.className = 'fill' + (zone === 'over' ? ' dizzy' : zone === 'sweet' ? ' full' : '');
       d.powerTxt.textContent = `${(p * 100).toFixed(0)}%`;
+      d.powerState.textContent = zone === 'over' ? 'OVERCHARGE' : zone === 'sweet' ? 'SWEET SPOT' : 'BUILD';
+      d.powerState.className = 'pstate ' + zone;
       d.spinTxt.textContent = (this.spin.rot / 360).toFixed(1);
       d.dizzyTxt.hidden = this.spin.dizzy < 0.02;
-      if (this.mode.noseAssist) d.powerTxt.textContent = this.spin.dizzy > 0.02 ? 'DIZZY!' : `${(p * 100).toFixed(0)}%`;
       d.powerBar.setAttribute('aria-valuenow', (p * 100).toFixed(0));
+      d.powerBar.setAttribute('aria-valuetext', `${(p * 100).toFixed(0)}% power, ${d.powerState.textContent.toLowerCase()}`);
+      if (Math.abs(this.dialDrawn - this.windowHalf) > 0.4) this.setDial();
       const psi = this.spin.psiVis;
       d.needle.setAttribute('transform', `rotate(${psi.toFixed(1)})`);
       const inW = Math.abs(psi) <= this.windowHalf;
@@ -1417,6 +1707,9 @@ export class Game {
       this.updateNose();
     } else if (this.state === 'ready') {
       d.powerFill.style.width = '0%';
+      d.powerFill.className = 'fill';
+      d.powerState.textContent = 'BUILD';
+      d.powerState.className = 'pstate';
       d.powerTxt.textContent = '0%';
       d.spinTxt.textContent = '0.0';
       d.dizzyTxt.hidden = true;
@@ -1431,9 +1724,98 @@ export class Game {
       d.dialState.className = 'num';
     }
     void showMeters;
+    document.body.classList.toggle('card-on', !d.result.hidden);
+    document.body.classList.toggle('toast-on', this.clock < this.toastUntil);
+    d.camToast.classList.toggle('on', this.clock < this.toastUntil);
   }
 
   // ------------------------------------------------------------------ camera
+  /** The athlete turning beside a card (start screen, technique picker): the card owns the right (or bottom in portrait). */
+  athleteShot(want, look, card, dist, portraitDist) {
+    const cam = this.camera;
+    const portrait = cam.aspect < 0.9;
+    const D = portrait ? portraitDist : dist;
+    want.set(portrait ? 1.2 : 1.9, portrait ? 1.3 : 1.45, D);
+    look.set(0, 1.0, 0);
+    const H = 2 * D * Math.tan((this.baseFov * DEG) / 2);
+    if (portrait) look.y -= clamp((card ? card.offsetHeight : 400) / Math.max(1, innerHeight), 0.2, 0.7) * 0.5 * H * 0.95;
+    else {
+      const fw = clamp((card ? card.offsetWidth : 380) / Math.max(1, innerWidth), 0.2, 0.6);
+      const fx = look.x - want.x;
+      const fz = look.z - want.z;
+      const fl = Math.hypot(fx, fz) || 1;
+      const sh = 0.5 * fw * H * cam.aspect * 0.95;
+      look.x += (-fz / fl) * sh; // camera-right
+      look.z += (fx / fl) * sh;
+    }
+  }
+
+  /**
+   * Non-broadcast presets (see camera.js). `pos` = the disc in three.js space while it is in the air, else null (ready / spin).
+   * Fills want / look and returns { k, fov }. Static cameras (behind, side) stay put and zoom; chase cameras follow the disc.
+   */
+  presetShot(id, pos, s, want, look, fov0) {
+    const portrait = this.camera.aspect < 0.9;
+    const base = this.baseFov;
+    let k = 3;
+    let fov = fov0;
+    const spinP = this.state === 'spin' && this.spin ? this.spin.power : 0;
+    if (id === 'behind') {
+      want.set(portrait ? 1.1 : 1.3, portrait ? 2.7 : 2.1, portrait ? 8.8 : 7.2);
+      if (pos) {
+        look.set(pos.x, Math.max(0.9, pos.y * 0.9), pos.z);
+        fov = clamp(base * (16 / Math.max(16, want.distanceTo(pos))), 14, base);
+        k = 4;
+      } else {
+        look.set(0, 1.6, -14);
+        fov = base - spinP * 4;
+        k = 3;
+      }
+    } else if (id === 'side') {
+      // left of the sector (the tents are on the right): a fixed sideline position that pans with the disc
+      if (pos) {
+        want.set(portrait ? -27 : -22, portrait ? 3.8 : 2.9, portrait ? -26 : -24);
+        look.set(pos.x, Math.max(0.8, pos.y * 0.85), pos.z);
+        fov = base * (portrait ? 0.72 : 0.62);
+        k = 4;
+      } else {
+        want.set(portrait ? -12 : -13.5, portrait ? 2.4 : 1.8, portrait ? -3.5 : -4.5);
+        look.set(0, 1.3, 0.2);
+        fov = base * (portrait ? 0.62 : 0.65) - spinP * 3;
+        k = 3;
+      }
+    } else if (id === 'disc') {
+      if (pos) {
+        const hd = this.hdir;
+        want.copy(pos).addScaledVector(hd, -3.4);
+        want.y = Math.max(0.9, pos.y + 0.8);
+        look.copy(pos).addScaledVector(hd, 14);
+        look.y = Math.max(0.5, pos.y * 0.85);
+        fov = base + 4;
+        k = 7;
+      } else {
+        want.set(portrait ? 1.1 : 1.6, portrait ? 1.6 : 1.5, portrait ? 4.0 : 3.1);
+        look.set(0, 1.25, 0);
+        fov = base - spinP * 4;
+        k = 3;
+      }
+    } else {
+      // overhead
+      if (pos) {
+        want.set(pos.x * 0.7, 20 + Math.min(14, (s ? s.y : 0) * 0.6), pos.z + 13);
+        look.set(pos.x * 0.9, pos.y * 0.2, pos.z - 5);
+        fov = base * 0.85;
+        k = 3.5;
+      } else {
+        want.set(0.6, portrait ? 19 : 15.5, portrait ? 7 : 5.5);
+        look.set(0, 0.6, portrait ? -1.2 : -2.0);
+        fov = base * 0.9;
+        k = 3;
+      }
+    }
+    return { k, fov };
+  }
+
   updateCamera(dt) {
     const cam = this.camera;
     const want = new THREE.Vector3();
@@ -1441,6 +1823,8 @@ export class Game {
     let k = 3.2;
     let fov = this.baseFov;
     let roll = 0;
+    let focus = null; // what a collision-aware shot must keep visible (three.js space)
+    const preset = this.camId;
     const st = this.viewState();
     const flying = (st === 'flight' && this.cur && this.cur.stage === 'air') || (st === 'replay' && this.rt && this.rt.stage === 'air');
     const landed = (st === 'flight' && this.cur && this.cur.stage === 'landed') || (st === 'replay' && this.rt && this.rt.stage === 'landed');
@@ -1454,7 +1838,10 @@ export class Game {
       }
       const side = new THREE.Vector3(-this.hdir.z, 0, this.hdir.x); // right of travel
       const nearGround = s.vy < 0 && s.y < 10 && s.y / Math.max(2, -s.vy) < 1.1;
-      if (nearGround) {
+      if (preset !== 'broadcast') {
+        ({ k, fov } = this.presetShot(preset, pos, s, want, look, fov));
+        focus = pos;
+      } else if (nearGround) {
         want.copy(pos).addScaledVector(this.hdir, -9).addScaledVector(side, 4.5).setY(Math.max(1.6, s.y * 0.45 + 1.2));
         look.copy(pos).addScaledVector(this.hdir, 5).setY(Math.max(0.5, s.y * 0.6));
         k = 5.5;
@@ -1502,23 +1889,10 @@ export class Game {
         }
       }
     } else if (st === 'start') {
-      // the athlete turns slowly beside the start card: the card owns the right (desktop / landscape) or bottom (portrait)
-      const portrait = cam.aspect < 0.9;
-      const D = portrait ? 3.4 : 3.6;
-      want.set(portrait ? 1.2 : 1.9, portrait ? 1.3 : 1.45, D);
-      look.set(0, 1.0, 0);
-      const card = this.dom.start.firstElementChild;
-      const H = 2 * D * Math.tan((this.baseFov * DEG) / 2);
-      if (portrait) look.y -= clamp((card ? card.offsetHeight : 400) / Math.max(1, innerHeight), 0.2, 0.7) * 0.5 * H * 0.95;
-      else {
-        const fw = clamp((card ? card.offsetWidth : 380) / Math.max(1, innerWidth), 0.2, 0.6);
-        const fx = look.x - want.x;
-        const fz = look.z - want.z;
-        const fl = Math.hypot(fx, fz) || 1;
-        const sh = 0.5 * fw * H * cam.aspect * 0.95;
-        look.x += (-fz / fl) * sh; // camera-right
-        look.z += (fx / fl) * sh;
-      }
+      this.athleteShot(want, look, this.dom.start.firstElementChild, 3.6, 3.4);
+      k = 3;
+    } else if (st === 'tech') {
+      this.athleteShot(want, look, this.dom.tech.firstElementChild, 5.4, 5.2);
       k = 3;
     } else if (st === 'final') {
       const a = this.clock * 0.18;
@@ -1526,27 +1900,44 @@ export class Game {
       look.set(0, 1.6, -4);
       k = 2;
     } else {
-      // ready / spin: broadcast shot behind-right of the circle, slow drift
-      const drift = this.reducedMotion ? 0 : Math.sin(this.clock * 0.2) * 0.6;
-      if (cam.aspect < 0.9) {
-        want.set(3.2 + drift, 3.0, 10.8);
-        look.set(-0.2, 1.3, -7);
+      // ready / spin
+      if (preset === 'broadcast') {
+        // broadcast shot behind-right of the circle, slow drift
+        const drift = this.reducedMotion ? 0 : Math.sin(this.clock * 0.2) * 0.6;
+        if (cam.aspect < 0.9) {
+          want.set(3.2 + drift, 3.0, 10.8);
+          look.set(-0.2, 1.3, -7);
+        } else {
+          want.set(5.4 + drift, 2.75, 9.8);
+          look.set(-0.8, 1.45, -10);
+        }
+        if (st === 'spin' && this.spin) {
+          const p = this.spin.power;
+          want.z -= p * 1.1;
+          want.x -= p * 0.8;
+          fov -= p * 5;
+        }
+        k = st === 'spin' ? 5 : 2.2;
       } else {
-        want.set(5.4 + drift, 2.75, 9.8);
-        look.set(-0.8, 1.45, -10);
+        ({ k, fov } = this.presetShot(preset, null, null, want, look, fov));
+        k = st === 'spin' ? Math.max(k, 4) : k;
       }
-      if (st === 'spin' && this.spin) {
-        const p = this.spin.power;
-        want.z -= p * 1.1;
-        want.x -= p * 0.8;
-        fov -= p * 5;
-        roll = (this.spin.dizzy || 0) * 0.12 * Math.sin(this.spin.t * 7);
-      }
-      k = st === 'spin' ? 5 : 2.2;
+      if (st === 'spin' && this.spin) roll = (this.spin.dizzy || 0) * 0.12 * Math.sin(this.spin.t * 7);
+      focus = new THREE.Vector3(0, 1.2, 0);
+    }
+    // never let a net fill the view: nudge a non-broadcast shot around the athlete / circle until the sight line is clear
+    if (focus && (preset !== 'broadcast' || !flying) && [want.x, want.y, want.z].every(Number.isFinite)) {
+      const near = Math.hypot(focus.x, focus.z) < 12;
+      const c = clearCamera({ x: want.x, y: want.y, z: want.z }, { x: focus.x, y: focus.y, z: focus.z }, { pivot: near ? { x: focus.x, z: focus.z } : { x: 0, z: 0 } });
+      want.set(c.x, c.y, c.z);
     }
     if (![want.x, want.y, want.z, look.x, look.y, look.z].every(Number.isFinite)) {
       want.set(5.4, 2.75, 9.8); // belt and braces: a non-finite target must never reach the camera
       look.set(-0.8, 1.45, -10);
+    }
+    if (this.camBlend > 0) {
+      this.camBlend = Math.max(0, this.camBlend - dt);
+      k = Math.min(k, 2.4); // a view switch glides, it does not whip
     }
     const snap = this.camSnap > 0; // first frames of the start screen / MENU: cut straight to the shot, no fly-in
     if (snap) this.camSnap--;
@@ -1562,7 +1953,7 @@ export class Game {
     cam.lookAt(this.camLook);
     if (roll) cam.rotateZ(roll);
     if (Math.abs(cam.fov - fov) > 0.01) {
-      cam.fov += (fov - cam.fov) * (1 - Math.exp(-5 * dt));
+      cam.fov += (fov - cam.fov) * (snap ? 1 : 1 - Math.exp(-5 * dt));
       cam.updateProjectionMatrix();
     }
   }
@@ -1598,7 +1989,8 @@ export class Game {
       this.obstacles.update(this.tO, sdt);
     }
     const vs = this.viewState();
-    if (vs === 'ready' || vs === 'start') {
+    if (this.state === 'tech') this.updateDemo(dt);
+    if (vs === 'ready' || vs === 'start' || vs === 'tech') {
       this.stadium.setExcite(0.3 + 0.1 * Math.sin(this.clock));
       if (this.state === 'start' || this.state === 'ready' || this.state === 'help') this.thrower.idle(this.clock);
       if (this.state === 'start') this.thrower.setFacing(this.reducedMotion ? 150 : 180 + this.clock * 28);

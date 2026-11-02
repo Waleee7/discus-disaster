@@ -39,15 +39,22 @@
       <button id="btnMenu" type="button" title="Menu: athlete, mode, board (Esc)" aria-label="Menu: athlete, mode and leaderboard"><span class="ic" aria-hidden="true">&#9776;</span><span class="lbl"> MENU</span></button>
     </nav>
 
-    <!-- wind -->
-    <section class="wind" aria-label="Wind">
-      <svg id="windArrow" viewBox="-30 -30 60 60" aria-hidden="true"><circle r="27" class="ring"/><path d="M0 -20 L9 2 L3 0 L3 18 L-3 18 L-3 0 L-9 2 Z" class="arrow"/></svg>
-      <div class="wind-txt">
-        <span id="windKind" class="kind">HEADWIND</span>
-        <b id="windVal" class="num">0.0 m/s</b>
-        <span id="windCross" class="cross num">CROSS 0.0 &rarr;</span>
+    <!-- right column: wind, then the camera / technique buttons (only while they apply) -->
+    <div class="rightcol">
+      <section class="wind" aria-label="Wind">
+        <svg id="windArrow" viewBox="-30 -30 60 60" aria-hidden="true"><circle r="27" class="ring"/><path d="M0 -20 L9 2 L3 0 L3 18 L-3 18 L-3 0 L-9 2 Z" class="arrow"/></svg>
+        <div class="wind-txt">
+          <span id="windKind" class="kind">HEADWIND</span>
+          <b id="windVal" class="num">0.0 m/s</b>
+          <span id="windCross" class="cross num">CROSS 0.0 &rarr;</span>
+        </div>
+      </section>
+      <div class="cluster" role="group" aria-label="Camera and technique">
+        <button id="btnCam" type="button" title="Camera: next view (C)" aria-label="Camera: next view"><span class="ic" aria-hidden="true">&#9635;</span><span class="lbl"> CAM</span> <b id="camName">BROADCAST</b></button>
+        <button id="btnTech" type="button" title="Throwing technique (T)" aria-label="Throwing technique"><span class="ic" aria-hidden="true">&#10022;</span><span class="lbl"> TECHNIQUE</span> <b id="techName">WIDE-LEG REVERSE</b><i id="techDot" class="new-dot" title="Pick a technique before you throw">NEW</i></button>
+        <span id="camToast" class="toast" role="status" aria-live="polite"></span>
       </div>
-    </section>
+    </div>
 
     <!-- instant replay tag -->
     <div id="replayTag" hidden><i></i> INSTANT REPLAY <span id="replayInfo" class="num"></span></div>
@@ -71,7 +78,8 @@
       <p id="resNote" class="note"></p>
       <div class="res-actions">
         <button id="btnNext" type="button" class="primary">NEXT THROW <kbd>SPACE</kbd></button>
-        <button id="btnReplay2" type="button">REPLAY BEST</button>
+        <button id="btnReplay2" type="button" title="Replay best throw (R)">REPLAY</button>
+        <button id="btnSwap" type="button" class="swap" title="Change athlete (P)" aria-label="Change athlete"><span aria-hidden="true">&#8644;</span></button>
         <button id="btnBoard2" type="button">BOARD</button>
         <button id="btnShare" type="button" aria-live="polite" aria-label="Copy result to clipboard" title="Copy your result to share"><span class="lg">COPY RESULT</span><span class="sm">COPY</span></button>
         <button id="btnDetails" type="button" class="details" aria-expanded="false" aria-controls="resStats" title="Show throw details">DETAILS <i aria-hidden="true"></i></button>
@@ -81,9 +89,11 @@
     <!-- meters -->
     <section class="meters" aria-label="Throw meters">
       <div class="meter">
-        <div class="meter-head"><span>POWER</span><b id="powerTxt" class="num">0%</b></div>
-        <div class="bar" id="powerBar" role="meter" aria-label="Power" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="meter-head"><span>POWER</span><span id="powerState" class="pstate">BUILD</span><b id="powerTxt" class="num">0%</b></div>
+        <div class="bar" id="powerBar" role="meter" aria-label="Spin charge: build, sweet spot, overcharge" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div class="fill" id="powerFill"></div>
+          <div class="zone sweet" id="zoneSweet" aria-hidden="true"></div>
+          <div class="zone over" id="zoneOver" aria-hidden="true"></div>
         </div>
         <div class="meter-foot"><span>SPINS <b id="spinTxt" class="num">0.0</b></span><span id="dizzyTxt" class="dizzy" hidden>DIZZY!</span></div>
       </div>
@@ -143,6 +153,26 @@
       <div class="start-actions">
         <button id="btnStart" type="button" class="primary big-btn">PLAY <kbd>SPACE</kbd></button>
         <button id="btnBoard" type="button" class="board-btn">BOARD<i id="dailyDot" class="daily-dot" title="Today's Daily Throw is open">DAILY</i></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- technique picker: the athlete demos the selected technique in the stadium behind the card -->
+  <div id="tech" class="overlay tech" hidden role="dialog" aria-modal="true" aria-labelledby="techTitle">
+    <div class="tech-card">
+      <div class="tech-head">
+        <h2 id="techTitle">TECHNIQUE</h2>
+        <div class="tech-ath" role="group" aria-label="Athlete">
+          <button id="techPrev" type="button" class="arrow" aria-label="Previous athlete">&lsaquo;</button>
+          <b id="techAth">BLAZE</b>
+          <button id="techNext" type="button" class="arrow" aria-label="Next athlete">&rsaquo;</button>
+        </div>
+      </div>
+      <div id="techList" class="tech-list" role="radiogroup" aria-label="Throwing technique"></div>
+      <p id="techInfo" class="tech-info"></p>
+      <div class="tech-foot">
+        <a id="techReal" class="linkbtn" href="https://worldathletics.org/disciplines/throws/discus-throw" target="_blank" rel="noopener noreferrer">WATCH REAL TECHNIQUE <span aria-hidden="true">&#8599;</span></a>
+        <button id="techDone" type="button" class="primary">DONE <kbd>ENTER</kbd></button>
       </div>
     </div>
   </div>
