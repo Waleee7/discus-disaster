@@ -117,12 +117,25 @@ export function buildLighting(ctx) {
   const key = new THREE.PointLight(0xffd2a0, 14, 26, 1.5);
   key.position.set(-4.5, 5.5, 2.5);
   root.add(key);
+  const spotBase = spots.map((sl) => sl.intensity);
   return {
     beams,
     halos,
     spots,
+    hemi,
+    key,
+    haloMat,
+    beamMat,
+    lampMat: lamps.material,
     setHaze(on) {
       beams.forEach((b) => (b.visible = on));
+    },
+    /** Weather / time of day: floodlight level 0..1 (spots, halos, lamp lenses) and how visible the haze cones are. */
+    setLevel(k, beamI = 0.1) {
+      spots.forEach((sl, i) => (sl.intensity = spotBase[i] * k));
+      haloMat.opacity = 0.8 * Math.min(1, 0.2 + k);
+      lamps.material.color.setHex(0xfff3dc).multiplyScalar(0.35 + 0.65 * k);
+      beamMat.uniforms.uI.value = beamI * Math.min(1, k * 1.5);
     },
   };
 }

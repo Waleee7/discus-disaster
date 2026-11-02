@@ -1,6 +1,7 @@
 // The absurd cast: pigeon flock, coach's golf cart, hot-dog vendor, sprinkler, jumbotron.
 // Motion is a pure function of "obstacle time" tO so a recorded throw can be replayed exactly.
 import * as THREE from 'three';
+import { weatherOf, windFor, gustFor, densityOf } from './weather.js';
 import { mulberry32 } from './physics.js';
 import { toThree } from './scene.js';
 
@@ -11,12 +12,16 @@ const smooth = (x) => {
   return t * t * (3 - 2 * t);
 };
 
-export function makeLayout(seed) {
+export function makeLayout(seed, weather = 'clear') {
   const r = mulberry32(seed * 7919 + 13);
-  const headwind = -2.5 + r() * 8.5; // m/s, negative = tailwind
-  return {
+  // the draw order is fixed, so a Clear Night layout is exactly the original one for every seed
+  const w1 = r();
+  const w2 = r();
+  const wx = weatherOf(weather);
+  const layout = {
     seed,
-    wind: { x: -headwind, z: -4 + r() * 8 },
+    weather: wx.id,
+    wind: windFor(wx, w1, w2),
     flockPhase: r() * 20,
     cartX: 31 + r() * 22,
     cartPhase: r(),
@@ -24,6 +29,10 @@ export function makeLayout(seed) {
     sprinklerX: 46 + r() * 14,
     sprinklerZ: -6 + r() * 12,
   };
+  layout.gust = gustFor(wx, r);
+  layout.rho = densityOf(wx);
+  layout.temp = wx.temp;
+  return layout;
 }
 
 function label(text, w = 256, h = 128, bg = '#ffffff', fg = '#c0151f') {

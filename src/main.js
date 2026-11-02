@@ -44,6 +44,8 @@ window.__debug = {
   setPersona: (id) => game.setPersona(id),
   setTechnique: (id) => game.setTechnique(id),
   setCamera: (id) => game.setCamera(id),
+  setVenue: (id) => game.setVenue(id),
+  setWeather: (id) => game.setWeatherChoice(id),
   press: () => game.input._press(),
   release: () => game.input._release(),
   manual: (on = true) => (game.manual = on),

@@ -655,7 +655,7 @@ function pickWeighted(list, r) {
   return list[0][0];
 }
 
-function buildCrowd(seats, tier, onFrame) {
+export function buildCrowd(seats, tier, onFrame) {
   const r = mulberry32(31337);
   // shuffle so truncating `count` thins the whole crowd evenly (quality tier)
   for (let i = seats.length - 1; i > 0; i--) {
@@ -688,7 +688,8 @@ function buildCrowd(seats, tier, onFrame) {
     // clothing colour: school colours in the home sections, rival colours in the visitor stand, civvies otherwise
     const rr = r();
     let c;
-    if (rr < s.sec.school) c = (s.sec.id === 'visitors' ? AWAY_C : HOME_C)[Math.floor(r() * (s.sec.id === 'visitors' ? AWAY_C.length : HOME_C.length))];
+    const pal = s.sec.pal || (s.sec.id === 'visitors' ? AWAY_C : HOME_C);
+    if (rr < s.sec.school) c = pal[Math.floor(r() * pal.length)];
     else c = pickWeighted(CLOTH, r());
     col.setHex(c);
     const v = 0.78 + r() * 0.4;
@@ -706,7 +707,7 @@ function buildCrowd(seats, tier, onFrame) {
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   mesh.frustumCulled = false;
 
-  const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uExcite: { value: 0.3 }, uCalm: { value: 1 } }]);
+  const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uExcite: { value: 0.3 }, uCalm: { value: 1 }, uBright: { value: 1 }, uTint: { value: new THREE.Color(1, 1, 1) } }]);
   const mat = new THREE.ShaderMaterial({
     uniforms,
     fog: true,
@@ -736,7 +737,7 @@ function buildCrowd(seats, tier, onFrame) {
     fragmentShader: /* glsl */ `
       #include <common>
       #include <fog_pars_fragment>
-      uniform float uTime; uniform float uExcite;
+      uniform float uTime; uniform float uExcite; uniform float uBright; uniform vec3 uTint;
       varying vec2 vUv; varying vec3 vCol; varying vec4 vM; varying float vSc;
       float sdEll(vec2 p, vec2 r){ return (length(p / r) - 1.0) * min(r.x, r.y); }
       float sdRound(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
@@ -791,6 +792,7 @@ function buildCrowd(seats, tier, onFrame) {
         // phone screens: a few faces lit from below
         float phone = step(0.93, fract(vM.x * 19.7)) * step(vM.w, 0.9);
         c += phone * vec3(0.55, 0.62, 0.75) * smoothstep(0.1, 0.0, length(p - vec2(0.0, 0.62))) * 0.5;
+        c *= uBright * uTint;
         gl_FragColor = vec4(c, alpha);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>

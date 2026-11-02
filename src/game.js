@@ -23,6 +23,8 @@ import { STEPOUT_TURNS, powerOf, speedOf, releaseAngleOf } from './tuning.js';
 import { MODES, modeOf, powerFor, releaseParams, assistTarget, chargeProfile, overchargeOf, effectiveWindow, wobbleOf, previewFlight, HEAD_FACTOR_PRO, NOSE_MIN, NOSE_MAX } from './modes.js';
 import { TECHNIQUES, techniqueOf, isTechnique, DEFAULT_TECHNIQUE } from './techniques.js';
 import { presetOf, nextPreset, isPreset, DEFAULT_PRESET, clearCamera } from './camera.js';
+import { WEATHERS, WEATHER_CHOICES, weatherOf, isWeatherChoice, resolveWeather, dailyWeather } from './weather.js';
+import { VENUES, venueOf, isVenue, nextVenue, DEFAULT_VENUE } from './venues.js';
 import { PERSONAS, personaOf, personaIndex, rivalOf, rivalMark } from './personas.js';
 import { Leaderboard, ALL_TIME, dailyBoardId, dateKey, dailyLayoutSeed, dailySeed, shareText } from './leaderboard.js';
 import { store } from './storage.js';
@@ -83,6 +85,10 @@ export class Game {
     this.camId = isPreset(store.get('dd-cam')) ? store.get('dd-cam') : DEFAULT_PRESET;
     this.techId = isTechnique(store.get('dd-tech')) ? store.get('dd-tech') : DEFAULT_TECHNIQUE;
     this.tech = techniqueOf(this.techId);
+    this.venueId = isVenue(store.get('dd-venue')) ? store.get('dd-venue') : DEFAULT_VENUE;
+    this.weatherChoice = isWeatherChoice(store.get('dd-wx')) ? store.get('dd-wx') : 'clear';
+    this.weatherId = resolveWeather(this.weatherChoice);
+    this.stadiums = {};
     this.camBlend = 0; // seconds of extra-gentle camera motion after switching presets
     this.toastUntil = 0;
     this.demo = null; // technique-picker demo loop state
@@ -90,7 +96,7 @@ export class Game {
     this.daily = false;
     this.dKey = dateKey();
     this.runKey = null; // mode of the run in progress (null = no run yet)
-    this.windowHalf = effectiveWindow(this.mode, 0, 0, this.tech);
+    this.windowHalf = effectiveWindow(this.mode, 0, 0, this.tech, this.weatherId);
     this.dialDrawn = -1;
     this.noseManual = false;
     this.noseDrag = 0;
@@ -128,13 +134,14 @@ export class Game {
     this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 800);
     this.baseFov = 55;
 
-    this.stadium = buildStadium(this.scene, { reducedMotion: this.reducedMotion });
+    this.stadium = this.getStadium(this.venueId);
     this.particles = new Particles(this.scene);
     this.debris = new Debris(this.scene);
     this.obstacles = buildObstacles(this.scene, { particles: this.particles, debris: this.debris });
     this.thrower = buildThrower(personaOf(this.personaId));
     this.thrower.setStyle(this.tech.pose);
     this.scene.add(this.thrower.group);
+    this.markCasters();
     this.rival = buildRivalMarker();
     this.scene.add(this.rival.group);
     this.discus = buildDiscus();
@@ -159,6 +166,7 @@ export class Game {
       windKind: $('windKind'),
       windVal: $('windVal'),
       windCross: $('windCross'),
+      windWx: $('windWx'),
       powerFill: $('powerFill'),
       powerBar: $('powerBar'),
       powerTxt: $('powerTxt'),
@@ -226,7 +234,7 @@ export class Game {
     this.haptics = new Haptics(() => this.input.pad);
     this.bindButtons();
 
-    this.layout = makeLayout(this.seedBase);
+    this.layout = makeLayout(this.seedBase, this.weatherId);
     this.applyLayout(this.layout);
     this.resize();
     addEventListener('resize', () => this.resize());
@@ -243,6 +251,8 @@ export class Game {
     this.applyModeUi();
     this.applyCamUi();
     this.applyTechUi();
+    this.updateSetupUi();
+    this.applyWeather(false);
     this.updateCarousel();
     this.updateRival();
     this.openStart(true);
@@ -274,6 +284,8 @@ export class Game {
     click(d.btnTech, () => this.onAction('technique'));
     click(d.btnSwap, () => this.onAction('player'));
     click($('techDone'), () => this.closeTech());
+    click($('btnVenue'), () => this.setVenue(nextVenue(this.venueId)));
+    click($('btnWeather'), () => this.setWeatherChoice(WEATHER_CHOICES[(WEATHER_CHOICES.indexOf(this.weatherChoice) + 1) % WEATHER_CHOICES.length]));
     click($('techPrev'), () => this.cycleCharacter(-1));
     click($('techNext'), () => this.cycleCharacter(1));
     click($('btnBoard'), () => this.openBoard(ALL_TIME));
@@ -313,9 +325,12 @@ export class Game {
   applyLayout(l) {
     this.layout = l;
     this.obstacles.setLayout(l);
-    this.stadium.setWind(l.wind);
+    this.stadium.setWind(l.wind, l.gust);
     const hw = -l.wind.x;
     const d = this.dom;
+    const wxp = weatherOf(l.weather);
+    d.windWx.innerHTML = `<span aria-hidden="true">${wxp.icon}</span> <span class="wxn">${wxp.short}</span> ${Math.round(l.temp ?? wxp.temp)}\u00b0C${wxp.gust >= 0.3 ? '<span class="wxn"> \u00b7 GUSTS</span>' : ''}`;
+    d.windWx.title = `${wxp.name}, ${Math.round(l.temp ?? wxp.temp)}\u00b0C${wxp.gust >= 0.3 ? ', gusty' : ''}`;
     d.windKind.textContent = hw >= 0 ? 'HEADWIND' : 'TAILWIND';
     d.windKind.className = 'kind ' + (hw >= 0 ? 'head' : 'tail');
     d.windVal.textContent = `${Math.abs(hw).toFixed(1)} m/s`;
@@ -358,7 +373,7 @@ export class Game {
     $('modePro').setAttribute('aria-checked', String(this.modeId === 'pro'));
     $('modeBlurb').textContent = this.mode.blurb;
     this.dom.noseLbl.textContent = this.mode.noseAssist && !this.noseManual ? 'NOSE · AUTO' : 'NOSE ANGLE';
-    this.windowHalf = effectiveWindow(this.mode, this.attempt, 0, this.tech);
+    this.windowHalf = effectiveWindow(this.mode, this.attempt, 0, this.tech, this.weatherId);
     this.setDial();
     this.updateZones();
   }
@@ -384,6 +399,62 @@ export class Game {
     this.applyLayout(this.layout);
     this.updateNose();
     this.updateRival();
+  }
+
+  // ------------------------------------------------------------------ venue + weather
+  /** Build a venue on first use (cached), so switching back and forth is instant after the first time. */
+  getStadium(id) {
+    if (!this.stadiums[id]) {
+      const st = buildStadium(this.scene, { reducedMotion: this.reducedMotion, venue: id, renderer: this.renderer });
+      st.setWeather(weatherOf(this.weatherId));
+      this.stadiums[id] = st;
+    }
+    return this.stadiums[id];
+  }
+
+  markCasters() {
+    for (const st of Object.values(this.stadiums)) st.addCaster(this.thrower.group);
+  }
+
+  setVenue(id) {
+    if (!isVenue(id)) return;
+    store.set('dd-venue', id);
+    const next = this.getStadium(id);
+    if (this.stadium && this.stadium !== next) this.stadium.deactivate();
+    this.stadium = next;
+    this.venueId = id;
+    next.activate();
+    this.markCasters();
+    next.setWeather(weatherOf(this.weatherId));
+    next.setWind(this.layout.wind, this.layout.gust);
+    this.updateSetupUi();
+  }
+
+  setWeatherChoice(choice) {
+    if (!isWeatherChoice(choice)) return;
+    this.weatherChoice = choice;
+    store.set('dd-wx', choice);
+    this.weatherId = resolveWeather(choice);
+    this.runKey = null; // a different sky is a different run: PLAY starts fresh instead of resuming
+    this.applyWeather(true);
+    this.updateSetupUi();
+  }
+
+  /** Show the current weather (fog, sky, rain, sun) and, optionally, re-roll this throw's wind for it. */
+  applyWeather(relayout = true) {
+    this.stadium.setWeather(weatherOf(this.weatherId));
+    if (relayout) this.applyLayout(makeLayout(this.layout.seed, this.weatherId));
+    this.applyModeUi();
+  }
+
+  updateSetupUi() {
+    $('venueName').textContent = venueOf(this.venueId).short;
+    $('btnVenue').setAttribute('aria-label', `Venue: ${venueOf(this.venueId).name}. Press to change`);
+    const w = this.weatherChoice === 'random' ? 'RANDOM' : weatherOf(this.weatherChoice).name.toUpperCase();
+    $('weatherName').textContent = w;
+    $('btnWeather').setAttribute('aria-label', `Weather: ${w.toLowerCase()}. Press to change`);
+    document.body.dataset.venue = this.venueId;
+    document.body.dataset.weather = this.weatherId;
   }
 
   // ------------------------------------------------------------------ technique, camera, athlete swap
@@ -601,6 +672,7 @@ export class Game {
     this.thrower = buildThrower(p);
     this.thrower.setStyle(this.tech.pose);
     this.scene.add(this.thrower.group);
+    this.markCasters();
     if (inHand) {
       this.thrower.hand.add(this.discus.group);
       this.discus.group.position.set(0, 0, 0);
@@ -898,6 +970,9 @@ export class Game {
     this.noseManual = false;
     this.noseDrag = 0;
     this.dKey = dateKey();
+    // weather is fixed for a run: the Daily uses the date's weather, otherwise the picker's choice (Random rolls a fresh one)
+    this.weatherId = this.daily ? dailyWeather(dailySeed(this.dKey)) : resolveWeather(this.weatherChoice);
+    this.applyWeather(false);
     this.updateHudStatic();
     this.applyModeUi();
     this.updateRival();
@@ -911,7 +986,7 @@ export class Game {
       seed = dailyLayoutSeed(this.dKey, this.attempt);
       this.tO = 4 + this.attempt * 9;
     }
-    this.applyLayout(makeLayout(seed ?? ++this.seedBase));
+    this.applyLayout(makeLayout(seed ?? ++this.seedBase, this.weatherId));
     this.applyModeUi();
     this.setReadyVisuals();
     this.updatePips();
@@ -979,7 +1054,7 @@ export class Game {
     // CHARGE: build -> sweet spot -> overcharge. Past the sweet spot the green window shrinks and the needle shakes.
     const over = overchargeOf(m, s.rot, tech);
     const wobble = wobbleOf(m, s.rot, tech) * Math.sin(s.t * 19);
-    this.windowHalf = effectiveWindow(m, this.attempt, s.rot, tech);
+    this.windowHalf = effectiveWindow(m, this.attempt, s.rot, tech, this.weatherId);
     s.psi = wrap180(180 - s.rot);
     s.psiVis = s.psi + wobble;
     s.power = powerFor(m, s.rot, tech);
@@ -1018,7 +1093,7 @@ export class Game {
     const psi = Number.isFinite(s.psiVis) ? s.psiVis : 180;
     const p = Number.isFinite(s.power) ? s.power : 0;
     const auto = this.mode.noseAssist && !this.noseManual;
-    const { params, meta } = releaseParams(this.mode, { psi, rot: Number.isFinite(s.rot) ? s.rot : 0, power: p, attitude: auto ? 'auto' : this.attitude, wind: this.layout.wind, attempt: this.attempt, technique: this.tech });
+    const { params, meta } = releaseParams(this.mode, { psi, rot: Number.isFinite(s.rot) ? s.rot : 0, power: p, attitude: auto ? 'auto' : this.attitude, wind: this.layout.wind, attempt: this.attempt, technique: this.tech, weather: this.weatherId });
     if (auto && Number.isFinite(params.attitude)) {
       params.attitude = clamp(params.attitude, NOSE_MIN, NOSE_MAX);
       this.attitude = params.attitude;
@@ -1051,6 +1126,9 @@ export class Game {
       this.announcer.say('badRelease', {}, { priority: 3, ms: 3000 });
     }
     this.announcer.clear();
+    // the air of this venue / weather: density from the temperature, plus the gust profile (both deterministic)
+    if (this.layout.rho !== undefined && p.rho === undefined) p = { ...p, rho: this.layout.rho };
+    if (this.layout.gust && p.gust === undefined) p = { ...p, gust: this.layout.gust };
     const f = createFlight(p);
     const rec = {
       params: { ...f.p, coeffs: undefined },
@@ -1208,7 +1286,7 @@ export class Game {
   updateMultHud() {
     // multiplier shown in the score chip while airborne
     const r = this.cur && this.cur.rec;
-    this.dom.score.textContent = r && r.mult > 1 ? `${this.score} ×${r.mult.toFixed(1)}` : String(this.score);
+    this.dom.score.innerHTML = r && r.mult > 1 ? `${this.score}<span class="mult"> ×${r.mult.toFixed(1)}</span>` : String(this.score);
   }
 
   // ------------------------------------------------------------------ landing + result
@@ -1568,7 +1646,7 @@ export class Game {
     this.debris.clear();
     this.tape.hide();
     this.obstacles.setLayout(rec.layout);
-    this.stadium.setWind(rec.layout.wind);
+    this.stadium.setWind(rec.layout.wind, rec.layout.gust);
     const first = rec.samples[0];
     this.rt = { rec, t: 0, ev: 0, stage: 'air', landedT: 0 };
     this.discus.group.removeFromParent();
@@ -1761,7 +1839,7 @@ export class Game {
     let fov = fov0;
     const spinP = this.state === 'spin' && this.spin ? this.spin.power : 0;
     if (id === 'behind') {
-      want.set(portrait ? 1.1 : 1.3, portrait ? 2.7 : 2.1, portrait ? 8.8 : 7.2);
+      want.set(portrait ? 1.6 : 2.0, portrait ? 2.8 : 2.3, portrait ? 10.4 : 9.8);
       if (pos) {
         look.set(pos.x, Math.max(0.9, pos.y * 0.9), pos.z);
         fov = clamp(base * (16 / Math.max(16, want.distanceTo(pos))), 14, base);
@@ -2010,7 +2088,7 @@ export class Game {
     if (this.pending && this.clock >= this.pending.at && this.state === 'final') this.openInitials();
     this.particles.update(sdt);
     this.debris.update(sdt);
-    this.stadium.update(this.clock);
+    this.stadium.update(this.clock, this.camera);
     this.announcer.update();
     this.updateHud();
     this.updateCamera(dt);
@@ -2062,7 +2140,7 @@ export class Game {
     for (let i = 0; i < 2 && (this.state === 'result' || this.state === 'final'); i++) this.next();
     if (this.state !== 'ready') return Promise.reject(new Error('not ready: ' + this.state));
     if (p.seed !== undefined || p.wind) {
-      const l = makeLayout(p.seed ?? this.layout.seed);
+      const l = makeLayout(p.seed ?? this.layout.seed, this.weatherId);
       if (p.wind) l.wind = { x: p.wind.x ?? l.wind.x, z: p.wind.z ?? l.wind.z };
       this.applyLayout(l);
     }
@@ -2100,7 +2178,7 @@ export class Game {
 
   dispose() {
     cancelAnimationFrame(this.raf);
-    this.stadium.dispose();
+    Object.values(this.stadiums).forEach((st) => st.dispose());
     this.particles.dispose();
     this.debris.dispose();
     this.obstacles.dispose();

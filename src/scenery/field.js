@@ -122,7 +122,7 @@ function paintMacro(N) {
   }).c;
 }
 
-function paintTrackTile(W, H, noise, tileM) {
+function paintTrackTile(W, H, noise, tileM, base = [150, 62, 44]) {
   const { n2, fbm } = noise;
   const lineW = 0.055; // metres
   const { c, g } = paintPixels(W, H, (px, py, o) => {
@@ -137,9 +137,9 @@ function paintTrackTile(W, H, noise, tileM) {
     const gran2 = n2(x * 11 + 5, across * 11);
     const laneTint = 1 + (lane % 3 === 1 ? -0.03 : lane === 0 ? 0.045 : 0.01) + ((lane * 37) % 7) * 0.004;
     const k = laneTint * (0.9 + mot * 0.22) * (0.9 + gran * 0.16 + gran2 * 0.06);
-    let r = 150 * k;
-    let gg = 62 * k;
-    let b = 44 * k;
+    let r = base[0] * k;
+    let gg = base[1] * k;
+    let b = base[2] * k;
     // darker wear lanes: footfall polishes the inside of each lane's running line
     const within = (across % LANE_W) / LANE_W;
     const run = Math.exp(-(((within - 0.5) / 0.22) ** 2));
@@ -255,6 +255,7 @@ export function buildField(ctx) {
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(new Array(pos.length).fill(0).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
     geo.setIndex(idx);
     mk(geo, turfMat, 'turf');
+    ctx.refs.turfMat = turfMat;
   }
 
   // --- landing zone: divots, scuffs, skid scars (alpha decal over the turf) -----------------------------------
@@ -452,10 +453,11 @@ export function buildField(ctx) {
 
   // --- track ----------------------------------------------------------------------------------------------------
   const tileM = 12.5;
-  const trTex = toTexture(paintTrackTile(S(1024), S(512), makeNoise(63, 256), tileM), { wrap: true, aniso: 8 });
+  const trTex = toTexture(paintTrackTile(S(1024), S(512), makeNoise(63, 256), tileM, ctx.venue === 'world' ? [30, 92, 172] : undefined), { wrap: true, aniso: 8 });
   const trackMat = keep(
     patchGround(new THREE.MeshStandardMaterial({ map: trTex, roughness: 0.62, metalness: 0 }), { detail: detailTex, detailScale: 3, macro: macroTex, macroScale: 1 / 70, macroAmt: 0.22, detailAmt: 0.2 }),
   );
+  ctx.refs.trackMat = trackMat;
   const arcMid = ringArc(TRACK_W / 2, 480);
   const tileCount = Math.round(arcMid.total / tileM);
   // a loft of the surface with v across the width

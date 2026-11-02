@@ -16,6 +16,7 @@
 import { optimalAttitude, simulate, SECTOR_HALF_ANGLE } from './physics.js';
 import { powerOf, speedOf, releaseAngleOf, FULL_TURNS, STEPOUT_TURNS } from './tuning.js';
 import { techniqueOf } from './techniques.js';
+import { gripOf } from './weather.js';
 
 export const WINDOW_HALF_PRO = 40;
 export const HEAD_FACTOR_PRO = SECTOR_HALF_ANGLE / WINDOW_HALF_PRO; // pro: window edge == sector edge
@@ -84,9 +85,9 @@ export function overchargeOf(mode, rot, tech = techniqueOf()) {
 }
 
 /** Half-width (deg) of the green window right now: the mode's window x technique, shrunk by overcharge. */
-export function effectiveWindow(mode, attempt, rot, tech = techniqueOf()) {
+export function effectiveWindow(mode, attempt, rot, tech = techniqueOf(), weather) {
   const over = overchargeOf(mode, rot, tech);
-  const w = windowHalfFor(mode, attempt) * tech.window * (1 - mode.overShrink * tech.overK * over);
+  const w = windowHalfFor(mode, attempt) * tech.window * gripOf(weather) * (1 - mode.overShrink * tech.overK * over);
   return clamp(w, 16, 85);
 }
 
@@ -112,9 +113,9 @@ export function assistTarget(mode, tech, wind) {
  * `technique` (an id or a techniques.js entry) scales the speed / window and biases the angles; the default is neutral.
  * Returns { params, meta } where meta = { foulReason, tap, short, perfect, inWindow, window, over, technique }.
  */
-export function releaseParams(mode, { psi, rot = 0, power, attitude, wind, attempt = 0, technique }) {
+export function releaseParams(mode, { psi, rot = 0, power, attitude, wind, attempt = 0, technique, weather }) {
   const tech = typeof technique === 'object' && technique ? technique : techniqueOf(technique);
-  const win = effectiveWindow(mode, attempt, rot, tech);
+  const win = effectiveWindow(mode, attempt, rot, tech, weather);
   const speed = speedOf(power) * tech.speed;
   const meta = { foulReason: null, tap: false, short: false, perfect: false, inWindow: Math.abs(psi) <= win, window: win, over: overchargeOf(mode, rot, tech), technique: tech.id };
   let params;

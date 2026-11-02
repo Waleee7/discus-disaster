@@ -47,6 +47,7 @@
           <span id="windKind" class="kind">HEADWIND</span>
           <b id="windVal" class="num">0.0 m/s</b>
           <span id="windCross" class="cross num">CROSS 0.0 &rarr;</span>
+          <span id="windWx" class="wx num">CLEAR 20&deg;C</span>
         </div>
       </section>
       <div class="cluster" role="group" aria-label="Camera and technique">
@@ -150,6 +151,10 @@
         <button id="modePro" type="button" role="radio" aria-checked="false">PRO</button>
       </div>
       <p class="mode-blurb" id="modeBlurb"></p>
+      <div class="setup" role="group" aria-label="Venue and weather">
+        <button id="btnVenue" type="button" class="setup-btn" title="Change venue"><small>VENUE</small><b id="venueName">COLLEGE MEET</b></button>
+        <button id="btnWeather" type="button" class="setup-btn" title="Change weather"><small>WEATHER</small><b id="weatherName">CLEAR NIGHT</b></button>
+      </div>
       <div class="start-actions">
         <button id="btnStart" type="button" class="primary big-btn">PLAY <kbd>SPACE</kbd></button>
         <button id="btnBoard" type="button" class="board-btn">BOARD<i id="dailyDot" class="daily-dot" title="Today's Daily Throw is open">DAILY</i></button>

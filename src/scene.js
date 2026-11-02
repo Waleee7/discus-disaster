@@ -10,11 +10,15 @@ import { buildCage } from './scenery/cage.js';
 import { buildStands } from './scenery/stands.js';
 import { buildLighting } from './scenery/lighting.js';
 import { buildProps } from './scenery/props.js';
+import { buildWeatherFx } from './scenery/wx.js';
+import { buildBowl } from './scenery/bowl.js';
+import { gustFactor } from './physics.js';
 
 export { ARENA };
+const ORIGIN = new THREE.Vector3();
 export const toThree = (x, y, z, out = new THREE.Vector3()) => out.set(z, y, -x);
 
-export function buildStadium(scene, { reducedMotion = false, viewport, quality } = {}) {
+export function buildStadium(scene, { reducedMotion = false, viewport, quality, venue = 'college', renderer } = {}) {
   const root = new THREE.Group();
   scene.add(root);
   const mats = [];
@@ -24,11 +28,14 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality }
 
   scene.background = new THREE.Color(FOG_COLOR);
   scene.fog = new THREE.FogExp2(FOG_COLOR, 0.0034);
+  if (renderer) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const ctx = {
     root,
     scene,
     tier,
+    venue,
+    refs: {},
     S: (n) => Math.max(64, Math.round(n * tier.tex)),
     keep,
     noise: makeNoise(7, 256),
@@ -40,8 +47,10 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality }
   const sky = buildSky(ctx);
   buildField(ctx);
   buildCage(ctx);
-  const stands = buildStands(ctx);
-  const lights = buildLighting(ctx);
+  const world = venue === 'world';
+  const bowl = world ? buildBowl(ctx) : null;
+  const stands = world ? bowl : buildStands(ctx);
+  const lights = world ? bowl.lights : buildLighting(ctx);
   // soft multi-direction contact shadow under the athlete: one blob per spotlight, stretched away from its tower
   ctx.contacts.push([0, 0, 1.3, 1.3, 0, 0.26]);
   for (const sl of lights.spots) {
@@ -85,10 +94,11 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality }
   sock.position.set(-8.5, 0, -8.5);
   root.add(sock);
 
-  const state = { wind: { x: 0, z: 0 }, time: 0, tier: tier.name };
+  const wx = buildWeatherFx(ctx, { sky, lights, crowd, scene, renderer });
+  const state = { wind: { x: 0, z: 0 }, gust: null, time: 0, tier: tier.name, weather: null };
   const apply = (t) => {
     crowd.setDensity(t.crowd);
-    lights.setHaze(t.haze);
+    lights.setHaze(t.haze && !(state.weather && state.weather.tod === 'sunset'));
   };
   apply(tier);
   const down = { high: 'mid', mid: 'low', low: 'low' };
@@ -98,9 +108,26 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality }
     root,
     crowdMat: crowd.mat,
     tier,
-    setWind(w) {
+    setWind(w, gust = null) {
       state.wind = w;
+      state.gust = gust;
     },
+    /** Weather looks (fog, sky, rain, wet track, sun). `w` is a weather.js preset. */
+    setWeather(w) {
+      state.weather = w;
+      wx.apply(w);
+      if (world) bowl.setFog(scene.fog.color, scene.fog.density);
+      apply({ high: { crowd: 1, haze: true }, mid: { crowd: 0.7, haze: true }, low: { crowd: 0.42, haze: false } }[state.tier]);
+    },
+    /** Reactivate this venue's fog / background after another venue was shown. */
+    activate() {
+      root.visible = true;
+    },
+    deactivate() {
+      root.visible = false;
+    },
+    addCaster: (o) => wx.addCaster(o),
+    info: () => ({ venue, tier: tier.name }),
     setExcite(x) {
       crowd.mat.uniforms.uExcite.value = x;
     },
@@ -114,17 +141,20 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality }
       }
       return false;
     },
-    update(t) {
+    update(t, cam) {
       state.time = t;
+      if (world) bowl.update(t);
       crowd.mat.uniforms.uTime.value = reducedMotion ? 0 : t;
       sky.update(t);
-      const wx = state.wind.z;
-      const wz = -state.wind.x;
-      const sp = Math.hypot(wx, wz);
+      const gf = gustFactor(state.gust, t * 1.0);
+      const wx0 = state.wind.z * gf;
+      const wz = -state.wind.x * gf;
+      const sp = Math.hypot(wx0, wz);
       const k = Math.min(1, sp / 4.5);
       const flutter = Math.sin(t * 7 + 1) * 0.06 * k;
-      dir.set(sp > 1e-3 ? (wx / sp) * k : 0, -(1 - k) - 0.05 + flutter, sp > 1e-3 ? (wz / sp) * k : 0).normalize();
+      dir.set(sp > 1e-3 ? (wx0 / sp) * k : 0, -(1 - k) - 0.05 + flutter, sp > 1e-3 ? (wz / sp) * k : 0).normalize();
       sockPivot.quaternion.setFromUnitVectors(v.set(0, -1, 0), dir);
+      wx.update(t, cam || { position: ORIGIN }, state.wind, reducedMotion);
     },
     dispose() {
       mats.forEach((m) => {

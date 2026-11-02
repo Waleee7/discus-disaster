@@ -142,6 +142,8 @@ export function buildCage(ctx) {
   const pad = new THREE.Mesh(new THREE.CircleGeometry(PAD_R, 72), padMat);
   pad.rotation.x = -Math.PI / 2;
   pad.position.y = 0.014;
+  pad.name = 'pad';
+  ctx.refs.padMat = padMat;
   root.add(pad);
   const skirt = new THREE.Mesh(
     new THREE.CylinderGeometry(PAD_R, PAD_R + 0.025, 0.02, 72, 1, true),

@@ -8,6 +8,7 @@ const C = (h) => new THREE.Color(h);
 
 export function buildProps(ctx) {
   const { root, tier, keep } = ctx;
+  const world = ctx.venue === 'world'; // the championship bowl keeps only the neutral kit (rack, carts, officials)
   const r = mulberry32(8080);
   const hard = new GeoBuilder();
   const fab = new GeoBuilder();
@@ -68,7 +69,7 @@ export function buildProps(ctx) {
     for (let i = 0; i < 4; i++) fab.quad(co[i], co[(i + 1) % 4], apex, apex.clone(), undefined, i % 2 ? cb : ca);
     for (let i = 0; i < 4; i++) fab.quad(co[(i + 1) % 4], co[i], apex.clone(), apex.clone(), undefined, i % 2 ? cb : ca); // underside
   };
-  for (const t of tents) {
+  for (const t of world ? [] : tents) {
     const hw = 1.5;
     for (const [ax, az] of [[-hw, -hw], [hw, -hw], [hw, hw], [-hw, hw]]) {
       const px = t.x + ax * Math.cos(t.yaw) + az * Math.sin(t.yaw);
@@ -104,10 +105,10 @@ export function buildProps(ctx) {
     box(hard, 0.4, 0.4, 0.025, x + Math.sin(yaw) * 0.19, 0.46, z + Math.cos(yaw) * 0.19, yaw, col, 0.06);
     for (const [lx, lz] of [[-0.17, -0.17], [0.17, -0.17], [-0.17, 0.17], [0.17, 0.17]]) cyl(hard, 0.012, 0.012, 0.44, x + lx * Math.cos(yaw) + lz * Math.sin(yaw), 0, z - lx * Math.sin(yaw) + lz * Math.cos(yaw), 0x6d747a, 5);
   };
-  [[11.2, -13.2, 0.4], [11.8, -14.1, 0.1], [10.4, -20.5, -0.3], [11.0, -28.3, 0.2]].forEach(([x, z, y], i) => chairAt(x, z, y + r() * 0.3, [0x24282d, 0xe8700a, 0x16346a][i % 3]));
-  person({ x: 11.5, z: -13.6, yaw: -1.3, pose: 'sit', top: 0xe8700a, bottom: 0x16181c, skin: sk() });
-  person({ x: 9.4, z: -17.8, yaw: -1.4, pose: 'stand', top: 0x16346a, bottom: 0x202228, skin: sk() });
-  person({ x: 8.6, z: -18.4, yaw: -1.2, pose: 'stand', top: 0xd7d8d2, bottom: 0x1a1c20, skin: sk() });
+  (world ? [] : [[11.2, -13.2, 0.4], [11.8, -14.1, 0.1], [10.4, -20.5, -0.3], [11.0, -28.3, 0.2]]).forEach(([x, z, y], i) => chairAt(x, z, y + r() * 0.3, [0x24282d, 0xe8700a, 0x16346a][i % 3]));
+  if (!world) person({ x: 11.5, z: -13.6, yaw: -1.3, pose: 'sit', top: 0xe8700a, bottom: 0x16181c, skin: sk() });
+  if (!world) person({ x: 9.4, z: -17.8, yaw: -1.4, pose: 'stand', top: 0x16346a, bottom: 0x202228, skin: sk() });
+  if (!world) person({ x: 8.6, z: -18.4, yaw: -1.2, pose: 'stand', top: 0xd7d8d2, bottom: 0x1a1c20, skin: sk() });
 
   // --- left of the circle: implement rack + discs, carts, coach with a tripod ---------------------------------------
   {
@@ -163,7 +164,7 @@ export function buildProps(ctx) {
   }
 
   // --- pole vault (right) -------------------------------------------------------------------------------------------
-  {
+  if (!world) {
     const x = 21.5;
     box(hard, 1.22, 0.02, 38, x, 0, -25.5, 0, 0x7a4636, 0.06);
     box(hard, 0.05, 0.022, 38, x - 0.6, 0.001, -25.5, 0, 0xe6e2d6, 0.05);
@@ -182,7 +183,7 @@ export function buildProps(ctx) {
     ctx.contacts.push([x, -47.4, 6.5, 6.2, 0, 0.55]);
   }
   // --- steeple barriers + hurdle stacks (left) ----------------------------------------------------------------------
-  {
+  if (!world) {
     for (let i = 0; i < 3; i++) {
       const x = -25.5 - i * 0.2;
       const z = -26 - i * 4.4;
@@ -208,7 +209,7 @@ export function buildProps(ctx) {
   root.add(m1, m2);
 
   // --- tree line behind the stands: instanced blobs, varied hue / height / lean --------------------------------------
-  {
+  if (!world) {
     const mkBlob = (detail, sy) => {
       const g = new THREE.IcosahedronGeometry(1, detail);
       const p = g.attributes.position;

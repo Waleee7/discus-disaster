@@ -68,8 +68,8 @@ const finiteCamera = (page) =>
     return [c.position.x, c.position.y, c.position.z, c.fov, c.matrixWorld.elements[12], c.matrixWorld.elements[13], c.matrixWorld.elements[14]].every(Number.isFinite);
   });
 
-async function openFresh(name, viewport, mobile) {
-  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, isMobile: mobile, hasTouch: mobile });
+async function openFresh(name, viewport, mobile, opts = {}) {
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, isMobile: mobile, hasTouch: mobile, ...opts });
   await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(url).origin }).catch(() => {});
   const page = await ctx.newPage();
   page.on('console', (m) => {
@@ -160,7 +160,9 @@ async function hudChecks(page, name, mobile, state) {
     const others = ['.meters', '.dial', '.hint', '.wind', '.bug', '.tools'].map((q) => [q, document.querySelector(q)]).filter(([, el]) => el && vis(el)).map(([q, el]) => ({ q, ...box(el) }));
     const res = document.getElementById('result');
     const result = res && vis(res) ? box(res) : null;
-    const btns = ['btnNext', 'btnReplay2'].map((id) => document.getElementById(id)).filter((b) => b && vis(b)).map((b) => ({ id: b.id, ...box(b) }));
+    const btns = ['btnNext', 'btnReplay2', 'btnSwap'].map((id) => document.getElementById(id)).filter((b) => b && vis(b)).map((b) => ({ id: b.id, ...box(b) }));
+    const cluster = [...document.querySelectorAll('.cluster button')].filter(vis).map((b) => ({ id: b.id, ...box(b) }));
+    const clusterAvoid = ['.bug', '.tools', '.wind', '.hint', '.meters', '.dial', '.lt', '#replayTag'].map((q) => [q, document.querySelector(q)]).filter(([, el]) => el && vis(el)).map(([q, el]) => ({ q, ...box(el) }));
     const bar = ['.bug', '.tools', '.wind'].map((q) => [q, document.querySelector(q)]).filter(([, el]) => el && vis(el)).map(([q, el]) => ({ q, ...box(el) }));
     // landing mark (the discus rests on it) in CSS px
     let landing = null;
@@ -170,10 +172,15 @@ async function hudChecks(page, name, mobile, state) {
       const v = g.discus.group.position.clone().project(g.camera);
       landing = { x: ((v.x + 1) / 2) * innerWidth, y: ((1 - v.y) / 2) * innerHeight, front: v.z < 1 };
     }
-    return { small, tools, others, bar, btns, landing, result, vw: innerWidth, vh: innerHeight, meta: document.querySelector('meta[name=viewport]').content };
+    return { small, tools, others, bar, btns, cluster, clusterAvoid, landing, result, vw: innerWidth, vh: innerHeight, meta: document.querySelector('meta[name=viewport]').content };
   }, state);
   assert.ok(!/user-scalable\s*=\s*(no|0)/i.test(info.meta), 'pinch zoom is not disabled');
   assert.deepEqual(info.small, [], `${name}/${state}: HUD text under 11px`);
+  for (const b of info.cluster) {
+    assert.ok(b.l >= -0.5 && b.t >= -0.5 && b.r <= info.vw + 0.5 && b.b <= info.vh + 0.5, `${name}/${state}: ${b.id} inside the viewport ${JSON.stringify(b)}`);
+    assert.ok(b.b - b.t >= 43.9 && b.r - b.l >= 43.9, `${name}/${state}: ${b.id} is ${(b.r - b.l).toFixed(0)}x${(b.b - b.t).toFixed(0)}, needs 44x44`);
+    for (const o of info.clusterAvoid) assert.ok(!(b.l < o.r && b.r > o.l && b.t < o.b && b.b > o.t), `${name}/${state}: ${b.id} overlaps ${o.q} ${JSON.stringify(o)} vs ${JSON.stringify(b)}`);
+  }
   if (mobile) for (const b of info.tools) assert.ok(b.b - b.t >= 43.9 && b.r - b.l >= 43.9, `${name}: tool button ${b.id} is ${(b.r - b.l).toFixed(0)}x${(b.b - b.t).toFixed(0)}, needs 44x44`);
   // top row: scorebug, tools and wind never touch, and the tools stay on ONE row (no wrapping into the result card)
   for (let i = 0; i < info.bar.length; i++)
@@ -586,6 +593,234 @@ async function boardChecks(name, viewport, mobile) {
   log(`${name}: initials, board, daily and share checks pass`);
 }
 
+
+/** v3 features through the real UI: camera cycling, athlete swap, technique picker, charge meter, venue + weather pickers. */
+async function featureChecks(name, viewport, mobile) {
+  const { ctx, page } = await openFresh(name, viewport, mobile);
+  const D = (fn, arg) => page.evaluate(fn, arg);
+  const click = (sel) => page.locator(sel).click();
+  const shot = (f, always = false) => page.screenshot({ path: path.join(always || !TO_DOCS ? path.join(ROOT, 'tests', 'out') : SHOTS, `${name}-${f}.png`) });
+  mkdirSync(path.join(ROOT, 'tests', 'out'), { recursive: true });
+
+  // ---- venue + weather pickers (start screen) ----
+  assert.ok(await page.locator('#btnVenue').isVisible() && (await page.locator('#btnWeather').isVisible()), 'venue and weather pickers are on the start screen');
+  assert.equal((await page.textContent('#venueName')).trim(), 'COLLEGE MEET');
+  assert.equal((await page.textContent('#weatherName')).trim(), 'CLEAR NIGHT');
+  await overlayChecks(page, name, mobile, '#start', 'start-setup', { avoidThrower: true });
+  await click('#btnVenue');
+  assert.equal(await D(() => window.__debug.game.venueId), 'world');
+  assert.equal(await D(() => localStorage.getItem('dd-venue')), 'world', 'venue is remembered');
+  assert.equal((await page.textContent('#venueName')).trim(), 'WORLD STADIUM');
+  assert.equal(await D(() => window.__debug.game.stadium.info().venue), 'world');
+  const seen = [];
+  for (let i = 0; i < 6; i++) {
+    await click('#btnWeather');
+    seen.push(await D(() => window.__debug.game.weatherChoice));
+  }
+  assert.deepEqual(seen, ['breezy', 'rain', 'fog', 'sunset', 'random', 'clear'], 'the weather picker cycles Clear > Breezy > Rain > Fog > Sunset > Random');
+  await click('#btnWeather');
+  await click('#btnWeather'); // -> rain
+  assert.equal(await D(() => window.__debug.game.weatherId), 'rain');
+  assert.equal(await D(() => localStorage.getItem('dd-wx')), 'rain', 'weather is remembered');
+  assert.equal(await D(() => window.__debug.game.layout.weather), 'rain', 'the wind is rolled for the weather');
+  await D(() => window.__debug.advance(1.2));
+  await overlayChecks(page, name, mobile, '#start', 'start-venue-weather', { avoidThrower: true });
+  await page.waitForTimeout(250);
+  await shot('13-venue-weather');
+  await click('#btnStart');
+  await D(() => window.__debug.advance(1));
+  const wxTitle = ((await page.getAttribute('#windWx', 'title')) || '').trim();
+  assert.match(wxTitle, /^Rain, \d+°C/, `weather + temperature are in the wind badge (title: ${wxTitle})`);
+  assert.match((await page.textContent('#windWx')).trim(), /\d+°C$/, 'the temperature is shown in the badge');
+  const wet = await D(() => ({ win: window.__debug.game.windowHalf, rain: window.__debug.game.stadium.info().venue, vis: !!document.querySelector('body[data-weather="rain"]') }));
+  assert.ok(wet.win < 62 * 0.95 && wet.vis, `rain narrows the green (${wet.win.toFixed(1)} vs 62)`);
+  await hudChecks(page, name, mobile, 'ready');
+  await shot('14-world-rain-ready');
+  // a throw in the rain uses the wet-air density and the same pipeline
+  const rho = await D(async () => {
+    const r = await window.__debug.runThrow({ power: 0.9, psi: 0, attitude: 24 });
+    const g = window.__debug.game;
+    return { rho: g.cur.rec.params.rho, want: g.layout.rho, foul: r.foul, d: r.distance };
+  });
+  assert.equal(rho.rho, rho.want, 'the flight uses this weather\'s air density');
+  assert.ok(!rho.foul && rho.d > 50 && rho.d < 78, `a rainy throw is a believable throw: ${rho.d}`);
+  await D(() => { window.__debug.setWeather('sunset'); window.__debug.setVenue('college'); window.__debug.game.newRun(); window.__debug.advance(2.5); });
+  assert.equal(await D(() => window.__debug.game.state), 'ready');
+  await hudChecks(page, name, mobile, 'ready');
+  await shot('15-college-sunset-ready');
+  await D(() => { window.__debug.setWeather('clear'); window.__debug.game.newRun(); window.__debug.advance(1); });
+  assert.equal(await D(() => window.__debug.game.layout.weather), 'clear');
+
+  // ---- technique picker ----
+  await D(() => window.__debug.advance(0.5));
+  assert.ok(await page.locator('#btnTech').isVisible(), 'technique button shown while ready');
+  await click('#btnTech');
+  assert.equal(await D(() => window.__debug.game.state), 'tech');
+  await D(() => window.__debug.advance(2.2));
+  await page.waitForTimeout(300);
+  const names = await page.locator('#techList .tc .tc-name').allTextContents();
+  assert.equal(names.length, 5, 'five technique cards');
+  assert.ok(names.includes('POWER SPIN') && names.includes('WIDE-LEG REVERSE') && names.includes('LOW ARC') && names.includes('FLOATER') && names.includes('STANDING THROW'));
+  await overlayChecks(page, name, mobile, '#tech', 'technique', { avoidThrower: true });
+  const link = await D(() => {
+    const a = document.getElementById('techReal');
+    const r = a.getBoundingClientRect();
+    const c = document.querySelector('.tech-card').getBoundingClientRect();
+    return { href: a.href, target: a.target, rel: a.rel, h: r.height, inside: r.left >= c.left - 0.5 && r.right <= c.right + 0.5 && r.top >= c.top - 0.5 && r.bottom <= c.bottom + 0.5 };
+  });
+  assert.equal(link.href, 'https://worldathletics.org/disciplines/throws/discus-throw');
+  assert.equal(link.target, '_blank');
+  assert.match(link.rel, /noopener/);
+  assert.ok(link.h >= 43.9 && link.inside, `the real-technique link is a 44px target inside the card ${JSON.stringify(link)}`);
+  await shot('10-technique');
+  // the demo is the real in-game athlete: the pose differs per technique and the discus leaves the hand
+  const poses = {};
+  for (const [id, label] of [['power', 'POWER SPIN'], ['standing', 'STANDING THROW'], ['low', 'LOW ARC'], ['floater', 'FLOATER'], ['wide', 'WIDE-LEG REVERSE']]) {
+    await page.locator('#techList .tc', { hasText: label }).click();
+    assert.equal(await D(() => window.__debug.game.techId), id);
+    assert.equal(await page.locator('#techList .tc[aria-checked="true"]').count(), 1);
+    await D(() => window.__debug.advance(1.5)); // mid-spin
+    poses[id] = await D(() => { const g = window.__debug.game; const t = g.thrower; return [t.hand.getWorldPosition(new g.camPos.constructor()).y.toFixed(3), t.group.children[0].position.y.toFixed(3)].join('/'); });
+    await D(() => window.__debug.advance(2.2)); // after the release the disc flies away from the hand
+    const away = await D(() => { const g = window.__debug.game; return g.discus.group.parent === g.scene; });
+    assert.ok(away || (await D(() => window.__debug.game.demo.t)) > 0, `${id}: the demo loop runs`);
+    assert.equal(await D(() => localStorage.getItem('dd-tech')), id, 'technique is remembered');
+  }
+  assert.ok(new Set(Object.values(poses)).size >= 4, `each technique is performed differently: ${JSON.stringify(poses)}`);
+  // physics: the chosen technique reaches the release mapping (direction checks live in tests/techniques.test.mjs)
+  const phys = await D(async () => {
+    const m = await import('/src/modes.js');
+    const t = await import('/src/techniques.js');
+    const out = {};
+    for (const x of t.TECHNIQUES) out[x.id] = m.releaseParams(m.MODES.pro, { psi: 0, rot: 1100, power: 1, attitude: 25, wind: { x: 0, z: 0 }, technique: x });
+    return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, { speed: v.params.speed, angle: v.params.releaseAngle, nose: v.params.attitude, window: v.meta.window }]));
+  });
+  assert.ok(phys.power.speed > phys.wide.speed && phys.standing.speed < phys.wide.speed && phys.low.angle < phys.wide.angle && phys.floater.nose > phys.wide.nose && phys.standing.window > phys.power.window);
+  await page.keyboard.press('ArrowDown');
+  await click('#techDone');
+  assert.equal(await D(() => window.__debug.game.state), 'ready');
+  await D(() => window.__debug.setTechnique('standing'));
+  assert.equal((await page.textContent('#techName')).trim(), 'STANDING THROW');
+  // a human-style throw with Standing Throw: slow release, and the window is the widest
+  await page.keyboard.down('Space');
+  await D(() => window.__debug.advance(1.1));
+  await page.keyboard.up('Space');
+  await settle(page, 30);
+  const st = await D(() => ({ tech: window.__debug.game.cur.rec.meta.technique, speed: window.__debug.game.cur.rec.params.speed }));
+  assert.equal(st.tech, 'standing');
+  assert.ok(st.speed <= 24.6 * 0.8 + 0.01, `standing throw release speed ${st.speed.toFixed(1)}`);
+  await D(() => window.__debug.setTechnique('wide'));
+
+  // ---- athlete swap from the result card (and the P key in ready) ----
+  await D(() => window.__debug.advance(1.5));
+  await page.waitForTimeout(500);
+  assert.ok(await page.locator('#btnSwap').isVisible(), 'swap button in the result card');
+  const before = await D(() => ({ p: window.__debug.game.personaId, rival: window.__debug.game.rivalInfo.name }));
+  await hudChecks(page, name, mobile, 'result');
+  await click('#btnSwap');
+  const after = await D(() => ({ p: window.__debug.game.personaId, rival: window.__debug.game.rivalInfo.name, ch: localStorage.getItem('dd-char') }));
+  assert.notEqual(after.p, before.p, 'the athlete changed');
+  assert.notEqual(after.rival, before.rival, 'the rival flag follows the athlete');
+  assert.equal(after.ch, after.p, 'swap is remembered');
+  await D(() => window.__debug.advance(1.2));
+  assert.match((await page.textContent('#resChips')).toUpperCase(), new RegExp(after.rival.replace(/[^A-Z0-9 ]/g, '.')), 'the result card shows the NEW rival');
+  await hudChecks(page, name, mobile, 'result');
+  await page.waitForTimeout(300);
+  await shot('12-swap');
+  await D(() => window.__debug.game.next());
+  await D(() => window.__debug.advance(0.5));
+  await page.keyboard.press('KeyP');
+  assert.notEqual(await D(() => window.__debug.game.personaId), after.p, 'P swaps the athlete in ready too');
+
+  // ---- charge meter: build -> sweet spot -> overcharge (the green shrinks), no foul until the step-out turn ----
+  await D(() => { window.__debug.game.setState('ready'); window.__debug.game.startSpin(); });
+  const zones = await D(() => {
+    const g = window.__debug.game;
+    const at = (turns) => {
+      while (g.state === 'spin' && g.spin.rot < turns * 360) g.update(1 / 120);
+      return { state: document.getElementById('powerState').textContent, win: g.windowHalf, dial: document.getElementById('dialWindow').getAttribute('d'), cls: document.getElementById('powerFill').className, w: parseFloat(document.getElementById('powerFill').style.width) };
+    };
+    const a = at(1.2);
+    const b = at(3.3);
+    const c = at(4.6);
+    const bar = document.getElementById('powerBar').getBoundingClientRect();
+    const sw = document.getElementById('zoneSweet').getBoundingClientRect();
+    const ov = document.getElementById('zoneOver').getBoundingClientRect();
+    return { a, b, c, state: g.state, bar: [bar.left, bar.right], sw: [sw.left, sw.right], ov: [ov.left, ov.right] };
+  });
+  assert.equal(zones.a.state, 'BUILD');
+  assert.equal(zones.b.state, 'SWEET SPOT');
+  assert.equal(zones.c.state, 'OVERCHARGE');
+  assert.ok(zones.c.win < zones.b.win * 0.92, `the green window shrinks when overcharged: ${zones.b.win.toFixed(1)} -> ${zones.c.win.toFixed(1)}`);
+  assert.notEqual(zones.b.dial, zones.c.dial, 'the dial redraws the narrower green');
+  assert.equal(zones.state, 'spin', 'overcharging is not a foul by itself');
+  assert.ok(zones.sw[0] >= zones.bar[0] - 1 && zones.sw[1] <= zones.ov[0] + 1 && zones.ov[1] <= zones.bar[1] + 1, `zones sit inside the bar and in order ${JSON.stringify(zones)}`);
+  assert.ok(zones.b.w > zones.a.w && zones.c.w > zones.b.w, 'the charge bar fills up with the turns');
+  await D(() => { const g = window.__debug.game; g.spin = null; g.setState('ready'); });
+
+  // ---- camera presets: key C / gamepad-style action cycles, remembered, never fully behind a net ----
+  await D(() => { window.__debug.game.startAttempt(); window.__debug.advance(2); });
+  assert.equal(await D(() => window.__debug.game.camId), 'broadcast');
+  const order = ['behind', 'side', 'disc', 'overhead', 'broadcast'];
+  for (const id of order) {
+    await page.keyboard.press('KeyC');
+    assert.equal(await D(() => window.__debug.game.camId), id, `C cycles to ${id}`);
+    assert.equal(await D(() => localStorage.getItem('dd-cam')), id, 'camera choice is remembered');
+    await D(() => window.__debug.advance(3));
+    assert.ok(await finiteCamera(page), `${id}: camera finite`);
+    const blocked = await D(async () => {
+      const m = await import('/src/camera.js');
+      const c = window.__debug.game.camera.position;
+      return m.viewBlocked({ x: c.x, y: c.y, z: c.z }, { x: 0, y: 1.2, z: 0 });
+    });
+    assert.equal(blocked, false, `${id}: no net fills the view of the athlete`);
+    await hudChecks(page, name, mobile, 'ready');
+  }
+  assert.equal((await page.textContent('#camName')).trim(), 'BROADCAST');
+  // each preset mid-flight (and the toast names it); pressing C while airborne works
+  for (const id of ['behind', 'side', 'disc', 'overhead']) {
+    await D((c) => window.__debug.setCamera(c), id);
+    await D(() => { const g = window.__debug.game; if (g.state !== 'ready') { while (g.state === 'result') g.next(); } g.startAttempt(); window.__debug.advance(1.5); window.__p = window.__debug.throw({ seed: 4, power: 0.95, psi: 0, attitude: 22, wind: { x: -3, z: 1 } }); });
+    await D(() => window.__debug.advance(1.5));
+    assert.equal(await D(() => window.__debug.state), 'flight');
+    assert.ok(await finiteCamera(page), `${id}: camera finite mid-flight`);
+    const cam = await D(() => { const c = window.__debug.game.camera; return [c.position.x, c.position.y, c.position.z]; });
+    assert.ok(cam.every((v) => Math.abs(v) < 200), `${id}: the camera stays in the stadium ${cam}`);
+    await hudChecks(page, name, mobile, 'flight');
+    await shot(`11-cam-${id}`, true);
+    await settle(page, 40);
+  }
+  await D(() => { const g = window.__debug.game; g.next(); g.startAttempt(); window.__debug.advance(1); window.__p = window.__debug.throw({ seed: 4, power: 0.9, psi: 0 }); window.__debug.advance(1); });
+  const mid = await D(() => window.__debug.game.camId);
+  await page.keyboard.press('KeyC');
+  assert.notEqual(await D(() => window.__debug.game.camId), mid, 'C also works during flight');
+  await settle(page, 40);
+  await D(() => window.__debug.game.onAction('replay'));
+  assert.equal(await D(() => window.__debug.state), 'replay');
+  const mid2 = await D(() => window.__debug.game.camId);
+  await page.keyboard.press('KeyC');
+  assert.notEqual(await D(() => window.__debug.game.camId), mid2, 'C also works during the replay');
+  await D(() => window.__debug.advance(1.5));
+  assert.ok(await finiteCamera(page), 'camera finite in the replay');
+  await ctx.close();
+
+  // reduced motion: a preset switch cuts instead of gliding
+  const rm = await openFresh(name + '-rm', viewport, mobile, { reducedMotion: 'reduce' });
+  await rm.page.evaluate(() => window.__debug.skipIntro());
+  await rm.page.evaluate(() => window.__debug.advance(2));
+  await rm.page.evaluate(() => window.__debug.setCamera('overhead'));
+  await rm.page.evaluate(() => window.__debug.advance(0.1));
+  const near = await rm.page.evaluate(() => {
+    const g = window.__debug.game;
+    const p = g.camera.position.clone();
+    window.__debug.advance(4);
+    return p.distanceTo(g.camera.position);
+  });
+  assert.ok(near < 1.5, `reduced motion cuts straight to the new view (${near.toFixed(2)} m from settled after 0.1 s)`);
+  await rm.ctx.close();
+  log(`${name}: venue, weather, technique, swap, charge-meter and camera checks pass`);
+}
+
 const VIEWS = [
   ['desktop-1440x900', { width: 1440, height: 900 }, false],
   ['mobile-390x844', { width: 390, height: 844 }, true],
@@ -600,6 +835,7 @@ try {
   for (const v of VIEWS) await rookieChecks(...v);
   for (const v of VIEWS) await boardChecks(...v);
   for (const v of VIEWS) await skipChecks(...v);
+  for (const v of VIEWS) await featureChecks(...v);
   if (errors.length) {
     console.error('[smoke] console/page errors:\n' + errors.join('\n'));
     failed = true;

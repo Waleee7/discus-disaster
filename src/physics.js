@@ -49,6 +49,15 @@ export function airDensity(tempC = 20, altitudeM = 0) {
 
 export const RHO_DEFAULT = airDensity(20, 0); // ~1.204 kg/m^3
 
+/**
+ * Gust factor at time t (s): the wind speed multiplier for a gust profile { amp, w1, w2, ph1, ph2 } (two slow
+ * sinusoids, so gusts come and go over a few seconds). No gust = 1. Deterministic, so replays stay exact.
+ */
+export function gustFactor(g, t) {
+  if (!g || !g.amp) return 1;
+  return Math.max(0, 1 + g.amp * (0.6 * Math.sin(g.w1 * t + g.ph1) + 0.4 * Math.sin(g.w2 * t + g.ph2)));
+}
+
 // --- aerodynamic coefficient model (alpha in radians) ---------------------------------------
 const CL_SLOPE = 1.6; // per rad, low-aspect-ratio disc
 const ALPHA_ZERO_LIFT = -4 * DEG; // dished profile keeps a little lift at alpha = 0
@@ -108,6 +117,7 @@ const DEFAULTS = {
   releaseHeight: 1.6,
   originOffset: 0.9, // m from circle centre along the heading to the release point
   wind: { x: 0, y: 0, z: 0 }, // air velocity, m/s (negative x = headwind for a throw toward +x)
+  gust: null, // optional gust profile, see gustFactor()
   rho: RHO_DEFAULT,
   mass: DISCUS.mass,
   area: DISCUS.area,
@@ -150,9 +160,10 @@ export function createFlight(params = {}) {
 /** Aerodynamic + gravity acceleration for velocity v. Writes diagnostic fields into `diag` if given. */
 function accel(v, f, out, diag) {
   const { p, n } = f;
-  const rx = v[0] - p.wind.x;
-  const ry = v[1] - p.wind.y;
-  const rz = v[2] - p.wind.z;
+  const gf = p.gust ? gustFactor(p.gust, f.s.t) : 1;
+  const rx = v[0] - p.wind.x * gf;
+  const ry = v[1] - p.wind.y * gf;
+  const rz = v[2] - p.wind.z * gf;
   const sp = Math.hypot(rx, ry, rz);
   let ax = 0;
   let ay = -G;

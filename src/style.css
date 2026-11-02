@@ -57,8 +57,8 @@ kbd { font-family: var(--mono); font-size: max(11px, 0.72em); padding: 1px 6px; 
 /* ---------- right column: wind, then camera / technique (shown only while they apply) ---------- */
 .rightcol { top: var(--pad); right: var(--pad); display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .cluster { position: relative; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-.cluster button { position: relative; }
-.cluster button b { max-width: 15ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cluster button { position: relative; min-height: 44px; }
+.cluster button b { max-width: 19ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .new-dot { position: absolute; top: -9px; right: -4px; background: var(--green); color: #090a0f; font-style: normal; font-size: 11px; letter-spacing: 0.1em; padding: 1px 6px; font-weight: 700; }
 .new-dot[hidden] { display: none; }
 .toast { position: absolute; right: 0; top: calc(100% + 6px); background: var(--panel); border-right: 3px solid var(--accent); padding: 4px 10px; font-size: 12px; letter-spacing: 0.14em; white-space: nowrap; opacity: 0; transition: opacity 160ms; pointer-events: none; }
@@ -77,6 +77,7 @@ body:not([data-state='ready']) #btnTech { display: none; }
 .wind .kind.tail { color: var(--accent-ink); }
 .wind b { font-size: 22px; line-height: 1.05; }
 .wind .cross { font-size: 11px; color: var(--dim); }
+.wind .wx { font-size: 11px; color: var(--accent-ink); letter-spacing: 0.04em; white-space: nowrap; }
 
 /* ---------- meters ---------- */
 .meters { left: var(--pad); bottom: var(--pad); width: min(430px, 46vw); display: grid; grid-template-columns: 1fr 120px; gap: 10px; align-items: end; }
@@ -172,7 +173,7 @@ body[data-state='result'] .lt, body[data-state='final'] .lt, body[data-state='re
 #flash.show { animation: flashIn 1.4s cubic-bezier(0.2, 0.9, 0.2, 1) forwards; }
 
 /* ---------- result ---------- */
-#result { right: var(--pad); width: min(380px, calc(100vw - 2 * var(--pad))); top: calc(var(--pad) + 86px); background: var(--panel); border-top: 4px solid var(--accent); padding: 12px 18px 16px; pointer-events: none; animation: slideIn 260ms cubic-bezier(0.2, 0.9, 0.2, 1); }
+#result { right: var(--pad); width: min(380px, calc(100vw - 2 * var(--pad))); top: calc(var(--pad) + 98px); background: var(--panel); border-top: 4px solid var(--accent); padding: 12px 18px 16px; pointer-events: none; animation: slideIn 260ms cubic-bezier(0.2, 0.9, 0.2, 1); }
 #result[hidden] { display: none; }
 #result button { pointer-events: auto; }
 .res-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -287,6 +288,11 @@ body[data-state='final'] #btnSwap { display: none; }
 .seg button[aria-checked='true'] { background: var(--accent); color: #090a0f; }
 .seg button:hover:not([aria-checked='true']) { background: #1b2133; color: var(--ink); }
 .mode-blurb { margin: -4px 0 0; font-size: 13px; color: var(--dim); letter-spacing: 0.04em; min-height: 1.2em; }
+.setup { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.setup-btn { min-height: 48px; padding: 4px 10px; text-align: left; background: #111627; border: 1px solid var(--line); border-left: 3px solid var(--char); display: grid; align-content: center; gap: 0; min-width: 0; }
+.setup-btn small { font-size: 11px; letter-spacing: 0.18em; color: var(--dim); font-weight: 500; line-height: 1.2; }
+.setup-btn b { font-size: 15px; letter-spacing: 0.06em; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.setup-btn:hover { background: #1b2133; }
 .start-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .start-actions .big-btn { width: 100%; font-size: 22px; padding: 12px 20px 12px 24px; }
 .board-btn { position: relative; min-height: 52px; padding: 0 22px; background: #1b2133; border: 1px solid var(--line); font-weight: 700; letter-spacing: 0.14em; font-size: 16px; }
@@ -382,7 +388,7 @@ body.hint-on .lt.pop { animation-name: ltInHint; }
 @media (max-width: 860px) {
   .lt { left: var(--pad); right: var(--pad); bottom: 218px; max-width: none; }
   body.hint-on .lt { transform: none; }
-  .hint { left: var(--pad); right: var(--pad); top: calc(var(--pad) + 98px); bottom: auto; max-width: none; font-size: 12px; padding: 6px 8px; text-align: center; }
+  .hint { left: var(--pad); right: var(--pad); top: calc(var(--pad) + 106px); bottom: auto; max-width: none; font-size: 12px; padding: 6px 8px; text-align: center; }
   .hint i { margin: 0 5px; }
   .meters { width: calc(100vw - 126px - 3 * var(--pad)); grid-template-columns: 1fr; }
   .nose { grid-template-columns: 1fr; padding: 4px 10px; }
@@ -395,6 +401,7 @@ body.hint-on .lt.pop { animation-name: ltInHint; }
   .bug-body dd { font-size: 15px; }
   .bug-body dt { font-size: 11px; letter-spacing: 0.08em; }
   #attemptTxt { display: none; }
+  .bug .mult { display: none; } /* the multiplier also flashes on screen; the phone scorebug has no room for it */
   .pips i { width: 8px; height: 8px; }
   .bug-logo { font-size: 11px; padding: 3px 12px 3px 8px; }
   .bug-logo span:last-child { font-size: 14px; }
@@ -415,7 +422,8 @@ body.hint-on .lt.pop { animation-name: ltInHint; }
   .wind b { font-size: 15px; }
   .wind .kind { font-size: 11px; letter-spacing: 0.08em; }
   .wind .cross { display: none; }
-  .tools { top: calc(var(--pad) + 46px); gap: 4px; }
+  .wind .wxn { display: none; }
+  .tools { top: calc(var(--pad) + 57px); gap: 4px; }
   .tools button { padding: 4px 9px; font-size: 11px; min-height: 44px; min-width: 44px; justify-content: center; letter-spacing: 0.06em; }
   #result { top: calc(var(--pad) + 98px); right: var(--pad); left: var(--pad); width: auto; padding: 8px 12px 10px; }
   .big { font-size: 52px; }
@@ -461,7 +469,7 @@ body.hint-on .lt.pop { animation-name: ltInHint; }
   #replayTag { top: calc(var(--pad) + 98px); bottom: auto; }
 }
 @media (max-width: 860px) and (orientation: portrait) {
-  .cluster { position: fixed; top: calc(var(--pad) + 170px); right: var(--pad); }
+  .cluster { position: fixed; top: calc(var(--pad) + 176px); right: var(--pad); }
   .tech { place-items: end center; padding: 0; background: linear-gradient(180deg, rgba(6, 8, 15, 0) 0%, rgba(6, 8, 15, 0.1) 40%, rgba(6, 8, 15, 0.6) 100%); }
   .tech-card { width: 100%; border-left: 0; border-right: 0; border-bottom: 0; padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); gap: 8px; }
   .start { place-items: end center; padding: 0; background: linear-gradient(180deg, rgba(6, 8, 15, 0) 0%, rgba(6, 8, 15, 0.1) 40%, rgba(6, 8, 15, 0.6) 100%); }
@@ -515,7 +523,7 @@ body.hint-on .lt.pop { animation-name: ltInHint; }
   #replayTag { top: auto; bottom: var(--pad); font-size: 13px; padding: 4px 12px; }
 
   /* result / final: compact right-hand panel; everything that would sit on top of it steps aside */
-  #result { top: calc(var(--pad) + 46px); right: var(--pad); left: auto; width: min(300px, 40vw); max-height: calc(100vh - var(--pad) * 2 - 46px); overflow: auto; padding: 8px 12px 10px; border-top-width: 3px; }
+  #result { top: calc(var(--pad) + 50px); right: var(--pad); left: auto; width: min(300px, 40vw); max-height: calc(100vh - var(--pad) * 2 - 50px); overflow: auto; padding: 8px 12px 10px; border-top-width: 3px; }
   .big { font-size: 44px; }
   .unit { font-size: 20px; }
   .feet { font-size: 13px; }
@@ -585,7 +593,10 @@ body.hint-on .lt.pop { animation-name: ltInHint; }
 /* ---------- very short landscape (667x375, 844x390): one tool row, compact result card with a pinned footer ---------- */
 @media (orientation: landscape) and (max-height: 400px) {
   .tools { flex-wrap: nowrap; }
-  #result { top: calc(var(--pad) + 50px); width: min(320px, 46vw); max-height: calc(100vh - var(--pad) * 2 - 50px); padding: 6px 12px 0; }
+  #result { top: calc(var(--pad) + 54px); width: min(320px, 46vw); max-height: calc(100vh - var(--pad) * 2 - 54px); padding: 6px 12px 0; }
+  .wind .wx { font-size: 11px; line-height: 1.05; }
+  .wind b { line-height: 1; }
+  .chips .who { display: none; }
   #result .note { display: none; }
   .res-top { gap: 6px; }
   .rank { font-size: 13px; letter-spacing: 0.04em; }

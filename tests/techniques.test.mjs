@@ -167,6 +167,103 @@ test('camera net collision: a sight line through two nets (or one right in front
     assert.ok(Math.abs(Math.hypot(fixed.x, fixed.z) - r) < 1e-6 || fixed.y > 6, 'same radius (or lifted over the nets)');
   }
   // the shots the game uses are already clear
-  for (const c of [{ x: 5.4, y: 2.75, z: 9.8 }, { x: 3.2, y: 3, z: 10.8 }, { x: 1.3, y: 2.1, z: 7.2 }, { x: -13.5, y: 1.8, z: -4.5 }, { x: 1.6, y: 1.5, z: 3.1 }, { x: 0.6, y: 15.5, z: 5.5 }])
+  for (const c of [{ x: 5.4, y: 2.75, z: 9.8 }, { x: 3.2, y: 3, z: 10.8 }, { x: 2.0, y: 2.3, z: 9.8 }, { x: 1.6, y: 2.8, z: 10.4 }, { x: -13.5, y: 1.8, z: -4.5 }, { x: 1.6, y: 1.5, z: 3.1 }, { x: 0.6, y: 15.5, z: 5.5 }])
     assert.ok(!viewBlocked(c, ath), `preset shot ${JSON.stringify(c)} is not blocked`);
+});
+
+// ---- weather ----------------------------------------------------------------------------------------------------
+import { WEATHERS, weatherOf, densityOf, windFor, gustFor, dailyWeather, resolveWeather, gripOf } from '../src/weather.js';
+import { gustFactor, airDensity } from '../src/physics.js';
+
+test('weather presets: hot air is thinner than cold air, and the numbers are physical', () => {
+  assert.ok(densityOf('sunset') < densityOf('clear') && densityOf('clear') < densityOf('fog'), 'density falls as it warms');
+  assert.ok(Math.abs(densityOf('clear') - airDensity(20, 0)) < 1e-9, 'Clear Night is the original 20 C air');
+  for (const w of WEATHERS) assert.ok(densityOf(w) > 1.1 && densityOf(w) < 1.3, `${w.id} density ${densityOf(w)}`);
+});
+
+test('thin hot air costs a little distance (less lift, less drag) but never more than a couple of metres', () => {
+  const base = { speed: 24.6, releaseAngle: 35, attitude: 25, wind: { x: 0, z: 0 } };
+  const hot = run({ ...base, rho: densityOf('sunset') }).distance;
+  const cold = run({ ...base, rho: densityOf('fog') }).distance;
+  assert.ok(hot < cold, `hot ${hot.toFixed(2)} < cold ${cold.toFixed(2)}`);
+  assert.ok(cold - hot < 2.5, `the temperature effect stays small (${(cold - hot).toFixed(2)} m)`);
+});
+
+test('a headwind still helps in every weather (the quirk is not weather-dependent)', () => {
+  for (const w of WEATHERS) {
+    const base = { speed: 24.6, releaseAngle: 35, attitude: 25, rho: densityOf(w) };
+    assert.ok(run({ ...base, wind: { x: -3, z: 0 } }).distance > run({ ...base, wind: { x: 0, z: 0 } }).distance, `${w.id}: headwind beats still air`);
+    assert.ok(run({ ...base, wind: { x: 3, z: 0 } }).distance < run({ ...base, wind: { x: 0, z: 0 } }).distance, `${w.id}: tailwind costs distance`);
+  }
+});
+
+test('rain narrows the release window (only); other weathers leave it alone', () => {
+  for (const mid of ['pro', 'rookie']) {
+    const m = MODES[mid];
+    const dry = effectiveWindow(m, 0, 0, T('wide'), 'clear');
+    const wet = effectiveWindow(m, 0, 0, T('wide'), 'rain');
+    assert.ok(wet < dry * 0.95 && wet > dry * 0.75, `${mid}: rain ${wet.toFixed(1)} vs dry ${dry.toFixed(1)}`);
+    for (const id of ['breezy', 'fog', 'sunset', 'clear']) assert.equal(effectiveWindow(m, 0, 0, T('wide'), id), dry, `${id} does not touch the window`);
+  }
+  assert.equal(gripOf('rain') < 1, true);
+  // and the release mapping really uses it: the same dial error lands wider in the rain
+  const at = (weather) => {
+    const { params, meta } = releaseParams(MODES.pro, { psi: 20, rot: 3.3 * 360, power: 1, attitude: 25, wind: { x: 0, z: 0 }, weather });
+    return { az: Math.abs(run(params).azimuth), win: meta.window };
+  };
+  assert.ok(at('rain').az > at('clear').az && at('rain').win < at('clear').win);
+});
+
+test('each preset produces its intended wind range, gust and temperature', () => {
+  const lim = {};
+  for (const w of WEATHERS) {
+    const r = mulberry32(11);
+    let hMin = Infinity;
+    let hMax = -Infinity;
+    let cMax = 0;
+    for (let i = 0; i < 2000; i++) {
+      const v = windFor(w, r(), r());
+      hMin = Math.min(hMin, -v.x);
+      hMax = Math.max(hMax, -v.x);
+      cMax = Math.max(cMax, Math.abs(v.z));
+    }
+    assert.ok(hMin >= w.head[0] - 1e-9 && hMax <= w.head[1] + 1e-9 && cMax <= w.cross + 1e-9, `${w.id} stays in its range`);
+    assert.ok(hMin < w.head[0] + 0.4 && hMax > w.head[1] - 0.4 && cMax > w.cross - 0.4, `${w.id} uses its range`);
+    lim[w.id] = { hMax, cMax, speed: Math.max(Math.abs(hMin), Math.abs(hMax)) };
+  }
+  assert.ok(lim.breezy.hMax > lim.clear.hMax + 2 && lim.breezy.cMax > lim.clear.cMax, 'Breezy is windier than Clear');
+  assert.ok(lim.fog.hMax < 3 && lim.fog.cMax < 2, 'Fog is calm');
+  assert.ok(weatherOf('breezy').gust > 3 * weatherOf('clear').gust, 'Breezy is gusty');
+  assert.ok(weatherOf('sunset').temp >= 30 && weatherOf('fog').temp <= 10);
+  // Clear Night reproduces the original wind ranges exactly (-2.5..6 headwind, +-4 cross)
+  assert.deepEqual(windFor('clear', 0, 0), { x: 2.5, z: -4 });
+  assert.deepEqual(windFor('clear', 1, 1), { x: -6, z: 4 });
+});
+
+test('gusts are bounded, deterministic and really change the flight', () => {
+  const g = gustFor('breezy', mulberry32(3));
+  for (let t = 0; t < 8; t += 0.05) {
+    const f = gustFactor(g, t);
+    assert.ok(f >= 0 && f <= 1 + g.amp + 1e-9);
+    assert.equal(f, gustFactor(g, t));
+  }
+  assert.equal(gustFactor(null, 1), 1);
+  const base = { speed: 24.6, releaseAngle: 35, attitude: 25, wind: { x: -3, z: 4 } };
+  const calm = run(base);
+  const gusty = run({ ...base, gust: g });
+  assert.notEqual(calm.distance, gusty.distance);
+  assert.ok(Math.abs(calm.landing.z - gusty.landing.z) < 6, 'a gust nudges the disc, it does not teleport it');
+  assert.deepEqual(run({ ...base, gust: g }).landing, gusty.landing, 'deterministic');
+});
+
+test('the Daily Throw weather is fixed by the date seed, and Random resolves to a real preset', () => {
+  assert.equal(dailyWeather(20261102), dailyWeather(20261102));
+  const seen = new Set();
+  for (let d = 0; d < 60; d++) seen.add(dailyWeather(20260101 + d));
+  assert.ok(seen.size >= 4, `the daily cycles through the presets (${[...seen]})`);
+  for (const id of seen) assert.ok(WEATHERS.some((w) => w.id === id));
+  const r = mulberry32(9);
+  const got = new Set(Array.from({ length: 60 }, () => resolveWeather('random', r)));
+  assert.ok(got.size >= 4 && [...got].every((id) => WEATHERS.some((w) => w.id === id)));
+  assert.equal(resolveWeather('rain'), 'rain');
 });

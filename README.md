@@ -4,6 +4,8 @@
 
 **A funny, physically serious 3D browser game. Throw a real-aerodynamics discus under the floodlights, read the wind, and try not to hit the pigeons. (Hit the pigeons.)**
 
+> **v3 adds** (details below): five **camera** views (`C`), five original **throwing techniques** with an animated picker, a **charge meter** with a sweet spot and honest overcharge, **change athlete** between throws, a second venue (the **World Championships Stadium**, a 360-degree bowl) and **weather** (clear, breezy, rain, fog, hot sunset, random; the Daily Throw gets the date's weather).
+>
 > **v2 in one breath**
 > - **One action:** hold to spin, let go when the needle is in the green. That is the whole game in **Rookie** mode (wide window, auto nose, friendly taps). Switch to **Pro** for the original, unforgiving version.
 > - **Pick an athlete** (BLAZE the hype rookie, OLD IRON the stoic veteran, NOODLE the chaotic walk-on) and **beat the rival flag** on the pitch.
@@ -33,6 +35,28 @@ A perfect release at full power (~3 turns) is about **66 m in Pro** (the real re
 
 **Leaderboard.** Finish three throws and a qualifying mark asks for **3 initials** (arcade wheels, or just type). The board shows mark, athlete, mode and date, is seeded with fictional regulars so it is never empty, and lives in `localStorage` only. **Daily Throw** (BOARD > DAILY > PLAY TODAY'S THROW): the wind and cast phases come from the date, so everyone gets the same day; it has its own board and a share line like `DISCUS DISASTER daily · 61.2 m · Rookie · discus-disaster.vercel.app`. The board is one module, [`src/leaderboard.js`](src/leaderboard.js), behind a two-method adapter (`list`, `add`): a global backend is a new adapter, nothing else changes. There is no network code and no secret in this repo.
 
+## v3: camera, techniques, power, venues, weather
+
+**Camera** (`C`, gamepad `Y`, or the CAM button; ready, spin, flight and replay). Broadcast (the original), Behind circle (fixed, zooms down the sector), Side line, Discus cam (rides just behind the disc), Overhead. Switches glide (and cut under `prefers-reduced-motion`), the choice is remembered, and a small net-collision test ([`src/camera.js`](src/camera.js), same cage geometry as the scenery) nudges a shot around the athlete so a net never fills the lens. The rear cage gate is now small and folded back along the net.
+
+**Techniques** (`T` or the TECHNIQUE button, before each throw). Five original, generic styles, each performed by your in-game athlete in the picker, each mapped to real inputs (release speed, release angle, nose, green window, turns to full power):
+
+| Technique | What it does |
+|---|---|
+| Wide-Leg Reverse | the neutral all-rounder (Pro perfect release ~66 m) |
+| Power Spin | a little more speed, needs more turns, small shaky green |
+| Low Arc | flatter and faster: gains into a **headwind**, loses in a tailwind |
+| Floater | nose up, higher hang: gains in a **tailwind**, loses into a headwind |
+| Standing Throw | slow and short (~42 m) but the widest green by far: the most forgiving |
+
+(The wind notes follow this simulator: a flat fast throw is best into a headwind, a higher nose pays off in a tailwind; the brief had them the other way round.) A "Watch real technique" link opens World Athletics' discus page in a new tab. No real athletes, photos or video are used.
+
+**Power** is a charge meter: BUILD, then a green **SWEET SPOT** band (full power, accurate), then **OVERCHARGE**: the green window shrinks and the needle shakes, so a late release lands wider instead of just fouling. Only 5 turns steps out of the circle. Rookie keeps a later, gentler overcharge.
+
+**Change athlete** (`P` or the arrows button on the result card / picker): the rival flag follows.
+
+**Venues and weather** (start screen). *College Night Meet* (the original) or *World Championships Stadium*: two raked tiers, a roof ring with a lamp rim, fan blocks with waving flags, an LED ribbon, giant video boards, a results board, a camera rail and an open ceremonial end with a flame tower (fictional "Meridian Games": no rings, event names, sponsors or logos). Weather changes the throw honestly: **wind** range and **gusts** (Breezy), **air density** from the temperature (hot air = thinner = a little less lift *and* drag), and **rain** narrows the green (a slippery circle; the aerodynamics are untouched). Fog, rain, sun and a wet track are looks only. Wind, weather and temperature sit in the wind badge. Clear Night reproduces the original winds exactly.
+
 ## Controls
 
 | Action | Keyboard | Mouse / Touch | Gamepad |
@@ -42,7 +66,8 @@ A perfect release at full power (~3 turns) is about **66 m in Pro** (the real re
 | Nose angle (optional in Rookie) | `W`/`S` or `Up`/`Down` | drag up / down while holding | left stick / D-pad |
 | Skip the landing beat | any press during flight | tap | `A` |
 | Menu (athlete, mode, board) | `Esc` | MENU button | |
-| Replay best / voice / haptics / help | `R` / `M` / `H` / `?` | toolbar, `?` on the start card | `X` / `Back` / `Y` |
+| Camera / technique / athlete | `C` / `T` / `P` | CAM, TECHNIQUE, the arrows button | `Y` |
+| Replay best / voice / haptics / help | `R` / `M` / `H` / `?` | toolbar, `?` on the start card | `X` / `Back` / `LB` |
 
 ## Scoring
 
@@ -82,7 +107,8 @@ node scripts/record-gif.mjs   # regenerates docs/gameplay.gif and docs/screensho
 <summary>What the tests check</summary>
 
 - `node --test tests/` (Node 18+): physics (vacuum range vs analytic, headwind beats still air, stall, determinism, perfect-throw calibration sweeps), the announcer, **modes** (Pro mapping unchanged; Rookie's assist lands farther and is legal more often than Pro at the same mid-quality release; a simulated average rookie lands 45-65 m within 3 throws; the tap is a short legal toss), and the **leaderboard** (seeded, sorted, top 10, validation, works with storage blocked or corrupt, a fake remote adapter plugs in, daily seed and share text).
-- `node tests/smoke.mjs` (Playwright) at 1440x900, 390x844, 844x390 and 667x375 through the real input path: start screen, athlete carousel, mode toggle and PLAY click; a human-style throw; Pro's instant tap and a poisoned release; Rookie's tap, slower needle, auto nose, PERFECT flash and coaching line; press-to-skip; initials entry (typed and wheels), board, Daily tab and share text; plus layout assertions on every screen (finite camera, 44 px targets, 11 px text, nothing overlapping, everything inside the viewport, athlete visible beside the start card).
+- **v3 tests** (`tests/techniques.test.mjs`): every technique moves speed / angle / nose / window the intended way, Standing Throw is the most forgiving, techniques stay realistic (medians, no record-breakers), the charge zones and overcharge, camera net collision, hot air < cold air, a headwind still helps in every weather, rain narrows the window, each preset's wind range, gusts, the Daily weather.
+- `node tests/smoke.mjs` (Playwright) at 1440x900, 390x844, 844x390 and 667x375 through the real input path: start screen, athlete carousel, mode toggle and PLAY click; a human-style throw; Pro's instant tap and a poisoned release; Rookie's tap, slower needle, auto nose, PERFECT flash and coaching line; press-to-skip; initials entry (typed and wheels), board, Daily tab and share text; plus, per viewport, the camera cycle (key C, flight, replay, reduced motion), athlete swap, technique picker (44 px targets, link, no overlap), charge-meter zones, and the venue + weather pickers; plus layout assertions on every screen (finite camera, 44 px targets, 11 px text, nothing overlapping, everything inside the viewport, athlete visible beside the start card).
 - It expects Playwright at `$HOME/.claude/scripts/node_modules/playwright`; edit the `require` path if yours lives elsewhere.
 
 </details>

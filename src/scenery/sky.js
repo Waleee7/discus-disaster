@@ -76,9 +76,19 @@ export function buildSky(ctx) {
         side: THREE.BackSide,
         depthWrite: false,
         fog: false,
-        uniforms: { uFog: { value: new THREE.Color(FOG_COLOR) } },
+        uniforms: {
+          uFog: { value: new THREE.Color(FOG_COLOR) },
+          uTop: { value: new THREE.Color(0.0016, 0.0028, 0.0085) },
+          uMid: { value: new THREE.Color(0.006, 0.0105, 0.026) },
+          uGlowCol: { value: new THREE.Color(0.075, 0.042, 0.02) },
+          uGlowAmt: { value: 1 },
+          uSunDir: { value: new THREE.Vector3(0, -1, 0) },
+          uSunCol: { value: new THREE.Color(1, 0.55, 0.22) },
+          uSunAmt: { value: 0 },
+          uCloud: { value: 1 },
+        },
         vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0);} ',
-        fragmentShader: `varying vec3 vP; uniform vec3 uFog;
+        fragmentShader: `varying vec3 vP; uniform vec3 uFog; uniform vec3 uTop; uniform vec3 uMid; uniform vec3 uGlowCol; uniform float uGlowAmt; uniform vec3 uSunDir; uniform vec3 uSunCol; uniform float uSunAmt; uniform float uCloud;
           float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
           float vn(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
             return mix(mix(hash(i),hash(i+vec2(1,0)),f.x), mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x), f.y); }
@@ -87,17 +97,23 @@ export function buildSky(ctx) {
             float h = d.y;
             float az = atan(d.x, d.z);
             vec3 fogc = uFog;
-            vec3 top = vec3(0.0016, 0.0028, 0.0085);
-            vec3 mid = vec3(0.006, 0.0105, 0.026);
+            vec3 top = uTop;
+            vec3 mid = uMid;
             // city glow: sodium-warm domes at a few azimuths, strongest right above the treeline
             float dome = 0.5 + 0.5 * sin(az * 2.0 + 0.7) * sin(az * 3.3 - 1.1) + 0.25 * sin(az * 7.0);
             float glow = exp(-max(h, 0.0) * 11.0) * (0.45 + 0.75 * clamp(dome, 0.0, 1.0));
             vec3 c = mix(fogc, mid, smoothstep(0.0, 0.3, h));
             c = mix(c, top, smoothstep(0.25, 0.9, h));
-            c += vec3(0.075, 0.042, 0.02) * glow * smoothstep(-0.02, 0.03, h);
+            c += uGlowCol * uGlowAmt * glow * smoothstep(-0.02, 0.03, h);
             // streaky high cloud catching the glow
             float cl = vn(vec2(az * 3.0, h * 14.0) + vec2(0.0, 2.0)) * vn(vec2(az * 7.0 + 3.0, h * 30.0));
-            c += vec3(0.02, 0.013, 0.01) * smoothstep(0.35, 0.8, cl) * exp(-h * 5.0) * step(0.02, h);
+            c += (uGlowCol * 0.3 + vec3(0.004)) * uCloud * smoothstep(0.35, 0.8, cl) * exp(-h * 5.0) * step(0.02, h);
+            // the sun: a small hard disc, a tight warm halo, and a wide faint band along the horizon on its side
+            float sd = max(dot(d, normalize(uSunDir)), 0.0);
+            float disc = smoothstep(0.99955, 0.99985, sd);
+            c += uSunAmt * uSunCol * (disc * 14.0 + pow(sd, 90.0) * 1.1 + pow(sd, 7.0) * 0.28 * exp(-max(h, 0.0) * 4.0));
+            // cloud streaks lit from below by the sun
+            c += uSunAmt * uSunCol * 0.5 * smoothstep(0.4, 0.85, cl) * smoothstep(0.02, 0.2, h) * smoothstep(0.65, 0.0, h) * pow(sd, 2.0);
             gl_FragColor = vec4(c, 1.0);
             #include <tonemapping_fragment>
             #include <colorspace_fragment>
@@ -163,6 +179,10 @@ export function buildSky(ctx) {
   beacon.position.set(-120, 118, -330);
   root.add(beacon);
   return {
+    dome,
+    stars,
+    beacon,
+    layers: [],
     update(t) {
       beacon.material.opacity = 0.2 + 0.8 * Math.max(0, Math.sin(t * 2.4)) ** 4;
     },
