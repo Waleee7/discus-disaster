@@ -796,8 +796,9 @@ export class Game {
       row('RELEASE', `${a.speed.toFixed(1)} m/s @ ${a.releaseAngle.toFixed(0)}°`) +
       row('NOSE / AoA', `${a.attitude.toFixed(0)}° / ${a.alphaRelease.toFixed(0)}°`) +
       row('AIRTIME / APEX', `${a.airtime.toFixed(2)} s / ${a.apex.toFixed(1)} m`) +
-      row(a.hw >= 0 ? 'HEADWIND GAIN' : 'TAILWIND COST', `${sign(a.windEffect)} m`, a.windEffect >= 0 ? 'up' : 'down') +
-      row('COACH SAYS', a.optGain > 0.25 ? `nose ${a.optAttitude.toFixed(0)}° = +${a.optGain.toFixed(1)} m` : 'nose angle: spot on', a.optGain > 0.25 ? 'down' : 'up');
+      (rr.foul ? '' :
+        row(a.hw >= 0 ? 'HEADWIND GAIN' : 'TAILWIND COST', `${sign(Math.abs(a.windEffect) < 0.05 ? 0 : a.windEffect)} m`, a.windEffect > -0.05 ? 'up' : 'down') +
+        row('COACH SAYS', a.optGain > 0.25 ? `nose ${a.optAttitude.toFixed(0)}° = +${a.optGain.toFixed(1)} m` : 'nose angle: spot on', a.optGain > 0.25 ? 'down' : 'up'));
     let note = '';
     if (a.hw >= 1.5 && !rr.foul) note = `Headwind ${a.hw.toFixed(1)} m/s added ${sign(a.windEffect)} m vs the same release in still air (simulated). Faster air over the disc = more lift.`;
     else if (a.hw <= -1.2 && !rr.foul) note = `Tailwind ${(-a.hw).toFixed(1)} m/s cost ${a.windEffect.toFixed(1)} m vs still air. Less airspeed, less lift.`;

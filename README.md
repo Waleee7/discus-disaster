@@ -1,16 +1,19 @@
 <p align="center"><img src="docs/banner.svg" alt="DISCUS DISASTER - animated banner" width="100%"></p>
 
+<p align="center"><a href="https://discus-disaster.vercel.app"><b>▶ PLAY NOW: discus-disaster.vercel.app</b></a></p>
+
 **A funny, physically serious 3D browser game. Throw a real-aerodynamics discus under the floodlights, read the wind, and try not to hit the pigeons. (Hit the pigeons.)**
 
 > **TL;DR**
 > - **Hold** (Space / mouse / touch) to spin, **let go** as the needle crosses the green, **drag up/down** (or `W`/`S`) to set the nose angle.
 > - **The headwind trick:** a headwind adds lift, so a well-set nose angle flies *farther* into a breeze (and a tailwind costs distance).
 > - **Run it:** `git clone https://github.com/Waleee7/discus-disaster.git && cd discus-disaster && python3 -m http.server 8137`, then open <http://localhost:8137>.
-> - 3 throws, best mark ranks you, hitting the cast multiplies your points. A live link is coming; until then it runs locally in one command.
+> - 3 throws, best mark ranks you, hitting the cast multiplies your points. Play it in your browser at **[discus-disaster.vercel.app](https://discus-disaster.vercel.app)**, or run it locally in one command.
 
 Built by a real college discus thrower who also writes software. No build step, no install, no CDN: Three.js is vendored in `vendor/`.
 
 <p align="center"><img src="docs/gameplay.gif" alt="Staged gameplay clip: spin, release in the green window, pigeon strike, slow-mo landing, measuring tape" width="720"></p>
+<p align="center"><img src="docs/screenshot.png" alt="Pigeon strike mid-flight under the stadium lights" width="49%"> <img src="docs/shots/mobile-390x844-5-result.png" alt="Result card on a phone" width="24%"></p>
 <p align="center"><sub>The GIF is a <b>staged</b> throw: a real key hold and release, but a hand-picked wind/obstacle seed and a pinned obstacle clock so the pigeon pass lines up, recorded as a 2x time-lapse to stay under 2.5 MB. Your own throws will be messier.</sub></p>
 
 ## Play it locally
