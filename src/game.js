@@ -1636,6 +1636,9 @@ export class Game {
       this.dpr = Math.max(1, this.dpr - 0.25);
       this.slowFrames = 0;
       this.resize();
+    } else if (this.slowFrames > 90 && this.dpr <= 1) {
+      this.slowFrames = 0;
+      this.stadium.degrade(); // already at 1x pixel ratio: thin the crowd / drop haze instead
     }
   }
 
