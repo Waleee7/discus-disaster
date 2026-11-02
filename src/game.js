@@ -26,6 +26,12 @@ export { powerOf, speedOf, releaseAngleOf };
 // ---- tuning -------------------------------------------------------------------------------
 const STEP = 1 / 240; // fixed physics step
 const REC_EVERY = 2; // record trajectory at 120 Hz
+// Post-landing beat (simulated seconds): the discus sits, then the tape runs out and the card counts up.
+// Slow-mo is limited to the last ~0.26 s of descent + the first 0.2 s after touchdown (~1.5 s of real time).
+const TAPE_START = 0.6;
+const TAPE_DUR = 1.1;
+const SLOW_SCALE = 0.3;
+const SKIP_GRACE = 0.35; // a press this soon after release is the release itself (key bounce), not a skip
 const WINDOW_HALF = 40; // deg: dial window half-width
 const HEAD_FACTOR = SECTOR_HALF_ANGLE / WINDOW_HALF; // dial angle -> throw heading (window edge == sector edge)
 const MULT_CAP = 9;
@@ -81,6 +87,7 @@ export class Game {
     this.hdir = new THREE.Vector3(0, 0, -1);
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.slowFrames = 0;
+    this.skipUntil = 0;
 
     // renderer / scene / camera
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -143,7 +150,9 @@ export class Game {
       resStats: $('resStats'),
       resNote: $('resNote'),
       btnNext: $('btnNext'),
+      btnDetails: $('btnDetails'),
       btnReplay: $('btnReplay'),
+      btnDetails: $('btnDetails'),
       btnReplay2: $('btnReplay2'),
       btnVoice: $('btnVoice'),
       btnHaptics: $('btnHaptics'),
@@ -201,6 +210,7 @@ export class Game {
     click(d.btnReplay2, () => this.onAction('replay'));
     click($('btnHelp'), () => this.onAction('help'));
     click(d.btnNext, () => this.onAction('next'));
+    click(d.btnDetails, () => this.setDetails(!d.result.classList.contains('open')));
     click($('btnStart'), () => this.closeHowTo());
     if (!this.announcer.supportsSpeech) {
       d.btnVoice.disabled = true;
@@ -253,7 +263,10 @@ export class Game {
         break;
       case 'result':
       case 'final':
-        this.next();
+        if (this.clock >= (this.skipUntil || 0)) this.next();
+        break;
+      case 'flight':
+        this.skipToResult();
         break;
       case 'replay':
         this.endReplay();
@@ -394,7 +407,14 @@ export class Game {
     this.announcer.say('ready', {}, { priority: 1 });
   }
 
+  /** Portrait result sheet: collapsed to a stat row by default, "details" opens the full breakdown. */
+  setDetails(open) {
+    this.dom.result.classList.toggle('open', open);
+    this.dom.btnDetails.setAttribute('aria-expanded', String(open));
+  }
+
   cancelFx() {
+    this.setDetails(false);
     this.particles.clear();
     this.debris.clear();
     this.dom.result.hidden = true;
@@ -572,12 +592,7 @@ export class Game {
       let guard = 0;
       while (c.acc >= STEP && !f.landed && guard++ < 2000) {
         c.acc -= STEP;
-        stepFlight(f, STEP);
-        c.steps++;
-        if (c.steps % REC_EVERY === 0 || f.landed) this.pushSample(f, rec);
-        this.checkHits(c);
-        if (!Number.isFinite(f.s.x + f.s.y + f.s.z)) Object.assign(f.s, { x: 3, y: 0, z: 0, vx: 0, vy: 0, vz: 0 });
-        if (f.s.t > 20 || f.s.y === 0) f.landed = true;
+        this.stepOnce(c);
       }
       this.setDiscusPose(f.s, f.n, dt);
       this.emitTrail(f.s);
@@ -587,6 +602,43 @@ export class Game {
       this.obstacles.update(this.tO, dt);
       this.updateLanded(dt);
     }
+  }
+
+  /** One fixed physics step: integrate, record, test obstacles, guard against non-finite state. */
+  stepOnce(c) {
+    const { f, rec } = c;
+    stepFlight(f, STEP);
+    c.steps++;
+    if (c.steps % REC_EVERY === 0 || f.landed) this.pushSample(f, rec);
+    this.checkHits(c);
+    if (!Number.isFinite(f.s.x + f.s.y + f.s.z)) Object.assign(f.s, { x: 3, y: 0, z: 0, vx: 0, vy: 0, vz: 0 });
+    if (f.s.t > 20 || f.s.y === 0) f.landed = true;
+  }
+
+  /**
+   * Press during flight / slow-mo / tape: finish the throw at once. The remaining flight is integrated with the same
+   * fixed step, obstacle clock and hit tests as the live path (60 Hz obstacle ticks, 240 Hz physics), so the mark,
+   * multiplier and points are what the full-length throw would have produced.
+   */
+  skipToResult() {
+    const c = this.cur;
+    if (this.state !== 'flight' || !c || c.done) return false;
+    if (c.stage === 'air') {
+      if (c.f.s.t < SKIP_GRACE) return false;
+      let guard = 0;
+      while (!c.f.landed && guard++ < 6000) {
+        this.tO = c.rec.tRel + c.f.s.t;
+        this.obstacles.update(this.tO, 1 / 60);
+        for (let i = 0; i < 4 && !c.f.landed; i++) this.stepOnce(c);
+      }
+      this.setDiscusPose(c.f.s, c.f.n);
+      this.onLanded();
+    }
+    c.landedT = TAPE_START + TAPE_DUR;
+    this.timeScale = 1;
+    this.skipUntil = this.clock + 0.45; // swallow the second tap of a double-tap
+    this.updateLanded(0);
+    return true;
   }
 
   emitTrail(s) {
@@ -663,7 +715,8 @@ export class Game {
       const rank = rankFor(distance);
       const idx = ['Park & Rec Hopeful', 'Frisbee Fugitive', 'Varsity Walk-On', 'Conference Contender', 'Regional Qualifier', 'Nationals Finalist', 'Olympic Hopeful', 'Diamond League Dangerous', 'World Record Menace'].indexOf(rank.title);
       const edge = Math.abs(az) > SECTOR_HALF_ANGLE - 2;
-      this.announcer.say(edge ? 'sectorEdge' : 'rank' + idx, { d: fmt(distance) }, { priority: 3, ms: 3800 });
+      // said when the count-up finishes (finishAttempt) so the caption never quotes a mark the card has not reached yet
+      rec.rankLine = [edge ? 'sectorEdge' : 'rank' + idx, { d: fmt(distance) }];
       if (distance >= WORLD_RECORD_M) this.flashNow('WORLD RECORD', `${fmt(distance)} m vs real WR ${WORLD_RECORD_M} m`, 'good');
     }
     // post-flight analysis (cheap: ~60 simulations of a few hundred steps)
@@ -691,8 +744,8 @@ export class Game {
     const c = this.cur;
     c.landedT += dt;
     const rr = c.rec.result;
-    const tapeStart = 0.9;
-    const tapeDur = 1.9;
+    const tapeStart = TAPE_START;
+    const tapeDur = TAPE_DUR;
     if (c.landedT >= tapeStart) {
       const k = smooth((c.landedT - tapeStart) / tapeDur);
       this.tape.set(rr.range, rr.az, rr.foul ? 1 : k, rr.foul);
@@ -764,6 +817,7 @@ export class Game {
     this.updatePips();
     this.updateHudStatic();
     this.setState('result');
+    if (rec.rankLine) this.announcer.say(rec.rankLine[0], rec.rankLine[1], { priority: 3, ms: 3800 });
     const res = this.resolvers.splice(0);
     const summary = { distance: rr.distance, foul: rr.foul, reason: rr.reason, mult: rec.mult, points: rec.points, hits: rec.hits, azimuth: rr.az, rank: rr.foul ? null : rankFor(rr.distance).title, analysis: rec.analysis };
     res.forEach((fn) => fn(summary));
@@ -792,6 +846,8 @@ export class Game {
   startReplay(rec) {
     if (!rec || !rec.samples.length) return;
     this.prevState = this.state;
+    this.announcer.clear();
+    this.flashNow(null);
     this.dom.result.hidden = true;
     this.dom.replayTag.hidden = false;
     this.dom.replayInfo.textContent = `BEST THROW • ${fmt(rec.result.distance)} m`;
@@ -898,9 +954,12 @@ export class Game {
     const psi = this.state === 'spin' && this.spin ? this.spin.psiVis : 0;
     const rel = releaseAngleOf(psi);
     const aoa = this.attitude - rel;
-    d.aoaTxt.textContent = `AoA ${aoa >= 0 ? '+' : ''}${aoa.toFixed(0)}° @ release`;
+    const aoaHtml = this.attitude > 32 ? `STALL RISK ${this.attitude.toFixed(0)}&deg;` : `AoA ${aoa >= 0 ? '+' : ''}${aoa.toFixed(0)}&deg;<span class="rel"> @ release</span>`;
+    if (d.aoaTxt.dataset.h !== aoaHtml) {
+      d.aoaTxt.dataset.h = aoaHtml;
+      d.aoaTxt.innerHTML = aoaHtml;
+    }
     d.aoaTxt.className = 'num ' + (this.attitude > 32 ? 'warn' : aoa < 2 && aoa > -16 ? 'good' : 'dim');
-    if (this.attitude > 32) d.aoaTxt.textContent = `STALL RISK ${this.attitude.toFixed(0)}°`;
     if (this.discus.group.parent === this.thrower.hand) this.discus.group.rotation.set(this.attitude * DEG, 0, 0);
   }
 
@@ -978,14 +1037,30 @@ export class Game {
         const dir = new THREE.Vector3(Math.sin(rr.az * DEG), 0, -Math.cos(rr.az * DEG));
         const right = new THREE.Vector3(-dir.z, 0, dir.x);
         const mid = dir.clone().multiplyScalar(L * 0.5);
-        want.copy(mid).addScaledVector(right, L * (cam.aspect < 0.9 ? 0.8 : 0.55) + 12).addScaledVector(dir, -L * 0.1).setY(L * 0.3 + 8);
-        look.copy(mid).addScaledVector(dir, L * (cam.aspect < 0.9 ? 0.08 : 0.2)).setY(0);
-        k = 1.6;
+        if (cam.aspect < 0.9) {
+          // portrait: the result sheet owns the bottom ~30% of the screen, so shoot down the tape from behind the
+          // circle. The landing mark sits in the upper-middle band, the tape runs up the screen to it.
+          want.copy(dir).multiplyScalar(-9).addScaledVector(right, 2.5).setY(L * 0.34 + 5);
+          look.copy(dir).multiplyScalar(L * 0.42).setY(0);
+        } else {
+          want.copy(mid).addScaledVector(right, L * 0.55 + 12).addScaledVector(dir, -L * 0.1).setY(L * 0.3 + 8);
+          look.copy(mid).addScaledVector(dir, L * 0.2).setY(0);
+          // the result card owns the right edge: slide the picture left so the landing mark stays in the free area
+          const f = clamp((this.dom.result.offsetWidth || 340) / Math.max(1, innerWidth), 0.15, 0.5);
+          const fwd = look.clone().sub(want).setY(0);
+          const dist = fwd.length();
+          if (dist > 1e-3) {
+            fwd.divideScalar(dist);
+            const half = dist * Math.tan((this.baseFov * DEG) / 2) * cam.aspect;
+            look.addScaledVector(new THREE.Vector3(-fwd.z, 0, fwd.x), half * f * 1.15);
+          }
+        }
+        k = 2.4;
       }
-      if (this.state === 'landed' || (landed && this.cur && this.cur.landedT < 0.9)) {
+      if (this.state === 'landed' || (landed && this.cur && this.cur.landedT < 0.45)) {
         // hold the low landing angle briefly, then rise
         const lt = this.cur ? this.cur.landedT : 0;
-        if (lt < 0.9) {
+        if (lt < 0.45) {
           want.set(this.camPos.x, Math.max(1.4, this.camPos.y), this.camPos.z);
           look.copy(this.discus.group.position);
           k = 2;
@@ -1044,12 +1119,12 @@ export class Game {
   }
 
   targetTimeScale() {
-    const slow = this.reducedMotion ? 0.6 : 0.22;
+    const slow = this.reducedMotion ? 0.6 : SLOW_SCALE;
     let s = null;
     if (this.state === 'flight' && this.cur && this.cur.stage === 'air') s = this.cur.f.s;
     else if (this.state === 'replay' && this.rt && this.rt.stage === 'air') s = this.replayS;
-    if (s && s.vy < 0 && s.y < 8 && s.y / Math.max(2, -s.vy) < 0.8 && s.y > 0) return slow;
-    if (this.state === 'flight' && this.cur && this.cur.stage === 'landed' && this.cur.landedT < 0.5) return slow;
+    if (s && s.vy < 0 && s.y < 8 && s.y / Math.max(2, -s.vy) < 0.26 && s.y > 0) return slow;
+    if (this.state === 'flight' && this.cur && this.cur.stage === 'landed' && this.cur.landedT < 0.2) return slow;
     return 1;
   }
 

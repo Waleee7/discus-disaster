@@ -1,7 +1,7 @@
 {
   "name": "discus-disaster",
   "version": "1.0.0",
-  "description": "A funny, physically serious 3D discus game. Static files, Three.js from a pinned CDN.",
+  "description": "A funny, physically serious 3D discus game. Static files, Three.js vendored (works offline).",
   "type": "module",
   "private": true,
   "license": "MIT",

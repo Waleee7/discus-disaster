@@ -72,8 +72,8 @@ while (guard++ < 400) {
   }
   void f;
 }
-await page.waitForTimeout(500);
-for (let i = 0; i < 6; i++) await shot(1 / FPS);
+// the clip ends ~0.5 s after the count-up completes (state flips to 'result' exactly then), so card, caption and chip agree
+for (let i = 0; i < 5; i++) await shot(1 / FPS);
 const info = await page.evaluate(() => ({ ...window.__debug.game.cur.rec.result, hits: window.__debug.game.cur.rec.hits }));
 console.log('recorded', n, 'frames; result', JSON.stringify({ distance: info.distance, foul: info.foul, hits: info.hits }));
 if (info.foul || !info.hits.length) console.warn('WARNING: staged throw no longer lines up (foul or no pigeon strike) - rescan seeds with scripts/scan-seeds.mjs');

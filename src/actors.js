@@ -139,7 +139,9 @@ export function buildTape() {
       tape.visible = !foul;
       pennant.material.color.set(foul ? 0xff4d4d : 0xffb020);
       ringMat.color.set(foul ? 0xff4d4d : 0xffb020);
-      tape.scale.set(1, len, 1);
+      // the mark is a long way off on a portrait phone: widen the tape and grow the flag with the throw so it reads
+      tape.scale.set(1 + range / 60, len, 1);
+      flag.scale.setScalar(1 + range / 45);
       tape.position.z = -(r0 + len / 2);
       tex.repeat.set(1, len / 1.5);
       flag.position.set(0, 0, -(r0 + len));

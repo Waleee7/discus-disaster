@@ -138,6 +138,21 @@ test('tuning: a seed sweep of PERFECT throws in still air has a median between 6
   assert.ok(Math.max(...out) < 74.35, 'a perfect throw in still air never reaches the 74.35 m world record');
 });
 
+test('tuning: across the game\'s random winds, perfect throws have a 65-70 m median and 72+ m is uncommon (<= 5%)', () => {
+  const rnd = mulberry32(7);
+  const out = [];
+  for (let i = 0; i < 2000; i++) {
+    const psi = (rnd() * 2 - 1) * 4;
+    const attitude = 20 + rnd() * 8;
+    const wind = { x: -(-2.5 + rnd() * 8.5), z: -4 + rnd() * 8 }; // same ranges as makeLayout: headwind -2.5..6 m/s, cross +-4
+    out.push(run({ speed: speedOf(1), releaseAngle: releaseAngleOf(psi), heading: psi * (17.46 / 40), attitude, wind }).distance);
+  }
+  const m = median(out);
+  const share72 = out.filter((d) => d >= 72).length / out.length;
+  assert.ok(m >= 65 && m <= 70, `median ${m.toFixed(1)} m`);
+  assert.ok(share72 <= 0.05, `${(share72 * 100).toFixed(1)}% of perfect throws reach 72 m (max ${Math.max(...out).toFixed(1)})`);
+});
+
 test('tuning: the world record needs a perfect throw plus a headwind; headwind gain stays at a few metres', () => {
   const base = { speed: speedOf(1), releaseAngle: releaseAngleOf(0), attitude: 25 };
   const still = run(base).distance;
