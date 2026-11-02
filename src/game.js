@@ -19,17 +19,15 @@ import { buildObstacles, makeLayout } from './obstacles.js';
 import { Announcer, rankFor } from './announcer.js';
 import { Haptics } from './haptics.js';
 import { Input } from './input.js';
+import { FULL_TURNS, DIZZY_TURNS, STEPOUT_TURNS, V_MIN, powerOf, speedOf, releaseAngleOf } from './tuning.js';
+
+export { powerOf, speedOf, releaseAngleOf };
 
 // ---- tuning -------------------------------------------------------------------------------
 const STEP = 1 / 240; // fixed physics step
 const REC_EVERY = 2; // record trajectory at 120 Hz
 const WINDOW_HALF = 40; // deg: dial window half-width
 const HEAD_FACTOR = SECTOR_HALF_ANGLE / WINDOW_HALF; // dial angle -> throw heading (window edge == sector edge)
-const FULL_TURNS = 3.1;
-const DIZZY_TURNS = 4.1;
-const STEPOUT_TURNS = 5.0;
-const V_MIN = 11;
-const V_MAX = 25.8; // m/s - tops out where a perfect throw into a good headwind can threaten the real WR
 const MULT_CAP = 9;
 const NOSE_MIN = -5;
 const NOSE_MAX = 50;
@@ -42,10 +40,6 @@ const smooth = (x) => {
 };
 const $ = (id) => document.getElementById(id);
 const fmt = (v, d = 2) => v.toFixed(d);
-
-export const powerOf = (rot) => Math.min(1, Math.pow(rot / (FULL_TURNS * 360), 0.9));
-export const speedOf = (p) => V_MIN + (V_MAX - V_MIN) * p;
-export const releaseAngleOf = (psi) => clamp(35 - 0.3 * psi, 12, 55);
 
 function glowTexture() {
   const c = document.createElement('canvas');
@@ -425,7 +419,7 @@ export class Game {
   // ------------------------------------------------------------------ spin
   startSpin() {
     this.setState('spin');
-    this.spin = { rot: 0, t: 0, tickN: 0, psi: 180, announced: new Set() };
+    this.spin = { rot: 0, t: 0, tickN: 0, psi: 180, psiVis: 180, power: 0, dizzy: 0, announced: new Set() };
     this.dom.hint.classList.add('off');
     this.flashNow(null);
     this.announcer.say('spin', {}, { priority: 1, ms: 2200 });
@@ -465,8 +459,8 @@ export class Game {
   /** Release from the live spin: the dial angle decides heading AND release angle (timing is the skill). */
   doRelease() {
     const s = this.spin;
-    const psi = s.psiVis;
-    const p = s.power;
+    const psi = Number.isFinite(s.psiVis) ? s.psiVis : 180;
+    const p = Number.isFinite(s.power) ? s.power : 0;
     const inWindow = Math.abs(psi) <= WINDOW_HALF;
     const speed = speedOf(p);
     let params = {
@@ -482,12 +476,13 @@ export class Game {
       params = { ...params, speed: Math.max(4, speed * 0.28), releaseAngle: 25, heading: 180 + psi * 0.2 };
       foulReason = 'cage';
     }
-    if (Math.abs(psi) <= 4) {
+    const tap = foulReason === 'cage' && s.rot < 120;
+    const perfect = !foulReason && Math.abs(psi) <= 4;
+    if (perfect) {
       this.flashNow('PERFECT', 'release window', 'good');
-      this.announcer.say('perfect', {}, { priority: 2, ms: 1800 });
       this.haptics.perfect();
     }
-    this.launch(params, { foulReason, power: p, psi, inWindow });
+    this.launch(params, { foulReason, power: p, psi, inWindow, tap, perfect });
   }
 
   stepOut() {
@@ -499,6 +494,15 @@ export class Game {
   // ------------------------------------------------------------------ flight
   launch(p, meta = {}) {
     if (this.state !== 'ready' && this.state !== 'spin') return;
+    const wind = p.wind || {};
+    const sane = [p.speed, p.releaseAngle, p.heading, p.attitude, wind.x, wind.z].every(Number.isFinite);
+    if (!sane) {
+      // never let a bad release value reach the integrator (NaN flight = black screen): cage foul instead
+      p = { speed: 4, releaseAngle: 25, heading: 180, attitude: Number.isFinite(this.attitude) ? this.attitude : 25, wind: this.layout.wind };
+      meta = { ...meta, foulReason: 'cage', power: 0, psi: 180, inWindow: false };
+      this.announcer.say('badRelease', {}, { priority: 3, ms: 3000 });
+    }
+    this.announcer.clear();
     const f = createFlight(p);
     const rec = {
       params: { ...f.p, coeffs: undefined },
@@ -527,7 +531,9 @@ export class Game {
     this.thrower.shoulder.rotation.set(0, 0, -0.9);
     this.shake = Math.max(this.shake, this.reducedMotion ? 0 : 0.22);
     this.haptics.release(meta.power ?? 0.6);
-    if (!meta.foulReason) this.announcer.say('release', {}, { priority: 2, ms: 1600 });
+    if (meta.tap) this.announcer.say('tap', {}, { priority: 2, ms: 2600 });
+    else if (meta.perfect) this.announcer.say('perfect', {}, { priority: 2, ms: 1800 });
+    else if (!meta.foulReason) this.announcer.say('release', {}, { priority: 2, ms: 1600 });
     this.updateMultHud();
     // teaching nudge about the wind / nose, after the release line has had a moment
     const hw = -this.layout.wind.x;
@@ -570,7 +576,8 @@ export class Game {
         c.steps++;
         if (c.steps % REC_EVERY === 0 || f.landed) this.pushSample(f, rec);
         this.checkHits(c);
-        if (f.s.t > 20) f.landed = true;
+        if (!Number.isFinite(f.s.x + f.s.y + f.s.z)) Object.assign(f.s, { x: 3, y: 0, z: 0, vx: 0, vy: 0, vz: 0 });
+        if (f.s.t > 20 || f.s.y === 0) f.landed = true;
       }
       this.setDiscusPose(f.s, f.n, dt);
       this.emitTrail(f.s);
@@ -605,8 +612,9 @@ export class Game {
       s.vx += (c.rng() - 0.5) * m.kick * 0.5;
       s.vz += (c.rng() - 0.5) * m.kick * 0.8;
       if (o.key === 'cart' || o.key === 'vendor') s.y = Math.max(s.y, 0.2);
-      this.flashNow(m.label, `x${m.mult}  •  MULTIPLIER x${rec.mult.toFixed(2).replace(/\.00$/, '')}`, 'good');
-      this.announcer.say({ pigeon: 'pigeon', cart: 'cart', vendor: 'vendor', sprinkler: 'sprinkler', jumbotron: 'jumbo' }[o.key], {}, { priority: 3, ms: 3000 });
+      this.flashNow(m.label, `MULTIPLIER x${rec.mult.toFixed(2).replace(/\.?0+$/, '')}`, 'good');
+      const lineKey = rec.hits.length >= 2 ? 'bonus' : { pigeon: 'pigeon', cart: 'cart', vendor: 'vendor', sprinkler: 'sprinkler', jumbotron: 'jumbo' }[o.key];
+      this.announcer.say(lineKey, { m: rec.mult.toFixed(2).replace(/\.?0+$/, '') }, { priority: 3, ms: 3000 });
       this.haptics.hit();
       this.shake = Math.max(this.shake, this.reducedMotion ? 0 : 0.3);
       this.stadium.setExcite(1);
@@ -654,7 +662,8 @@ export class Game {
     } else {
       const rank = rankFor(distance);
       const idx = ['Park & Rec Hopeful', 'Frisbee Fugitive', 'Varsity Walk-On', 'Conference Contender', 'Regional Qualifier', 'Nationals Finalist', 'Olympic Hopeful', 'Diamond League Dangerous', 'World Record Menace'].indexOf(rank.title);
-      this.announcer.say('rank' + idx, { d: fmt(distance) }, { priority: 3, ms: 3800 });
+      const edge = Math.abs(az) > SECTOR_HALF_ANGLE - 2;
+      this.announcer.say(edge ? 'sectorEdge' : 'rank' + idx, { d: fmt(distance) }, { priority: 3, ms: 3800 });
       if (distance >= WORLD_RECORD_M) this.flashNow('WORLD RECORD', `${fmt(distance)} m vs real WR ${WORLD_RECORD_M} m`, 'good');
     }
     // post-flight analysis (cheap: ~60 simulations of a few hundred steps)
@@ -1011,6 +1020,10 @@ export class Game {
         look.set(0, 1.6, -9);
         k = 1.2;
       }
+    }
+    if (![want.x, want.y, want.z, look.x, look.y, look.z].every(Number.isFinite)) {
+      want.set(5.4, 2.75, 9.8); // belt and braces: a non-finite target must never reach the camera
+      look.set(-0.8, 1.45, -10);
     }
     const f = 1 - Math.exp(-k * dt);
     this.camPos.lerp(want, f);

@@ -4,8 +4,9 @@
 
 Built by a real college discus thrower who also writes software. No build step, no dependencies to install, one CDN import.
 
-<p align="center"><img src="docs/gameplay.gif" alt="Gameplay: spin, release in the green window, pigeon strike, slow-mo landing, measuring tape" width="720"></p>
-<p align="center"><img src="docs/screenshot.png" alt="Pigeon strike mid-flight" width="720"></p>
+<p align="center"><img src="docs/gameplay.gif" alt="Staged gameplay clip: spin, release in the green window, pigeon strike, slow-mo landing, measuring tape" width="720"></p>
+<p align="center"><sub>The GIF is a <b>staged</b> throw: a real key hold and release, but a hand-picked wind/obstacle seed and a pinned obstacle clock so the pigeon pass lines up, recorded as a ~3 fps time-lapse to stay under 2.5 MB. Your own throws will be messier.</sub></p>
+<p align="center"><img src="docs/screenshot.png" alt="Pigeon strike mid-flight (from the same staged throw)" width="720"></p>
 
 ## Play it locally
 
@@ -15,7 +16,9 @@ python3 -m http.server 8137      # any static server works
 # open http://localhost:8137
 ```
 
-Needs a browser with WebGL2 (any current Chrome, Edge, Firefox, Safari). Fonts and Three.js load from CDNs, so you need a network connection the first time.
+Needs a browser with WebGL2. **Tested: Chromium (Playwright, desktop 1440x900, phone portrait 390x844, phone landscape 844x390 with touch emulation).** Firefox, Safari and Edge should work (standard ES modules, WebGL2, Pointer Events) but have not been tested, and real-device touch/haptics have not been tested at all.
+
+**Page weight and CDN.** About 1.5 MB decoded on first load: Three.js r160 is 1.2 MB of that (served compressed by jsDelivr), the game's own JS and CSS about 170 KB, fonts about 60 KB. Three.js and the Oswald / JetBrains Mono fonts come from CDNs (jsDelivr, Google Fonts), so the first load needs a network connection and the game will not start offline. The fonts degrade to system fallbacks if blocked; Three.js does not. Vendoring `three.module.js` into the repo is the fix if you need offline play.
 
 ## Controls
 
@@ -26,7 +29,9 @@ Needs a browser with WebGL2 (any current Chrome, Edge, Firefox, Safari). Fonts a
 | **Touch** | hold anywhere | lift finger | drag up / down while holding | toolbar buttons |
 | **Gamepad** | hold `A` or `RT` | let go | left stick / D-pad up-down | `X` replay, `Y` help, `Back` voice, `Start` next |
 
-How a throw works: power builds with every turn (full at ~3 turns, dizzy after 4, stepped out after 5). A dial shows your facing; **release inside the green window**. Dial angle sets both the heading (edge of window = edge of the legal sector) and the release angle (early = low and right, late = high and left). The nose angle sets how the disc meets the air. 3 throws, best distance sets your rank, bonuses multiply your points.
+**How long to learn it?** The controls take about a minute: hold, let go as the needle sweeps the green, nudge the nose. Expect to waste a throw or two before the timing clicks, and several more before the nose angle and the wind make sense (the post-throw readout tells you what your coach would have set).
+
+How a throw works: power builds with every turn (full at ~3 turns, dizzy after 4, stepped out after 5). A dial shows your facing; **release inside the green window**. The needle comes around once per turn, so you get a fresh chance to release every turn (full power arrives at ~3 turns; later turns only make you dizzy). Dial angle sets both the heading (edge of window = edge of the legal sector) and the release angle (early = low and right, late = high and left). The nose angle sets how the disc meets the air. 3 throws, best distance sets your rank, bonuses multiply your points.
 
 ## The physics is real
 
@@ -40,6 +45,8 @@ alpha  = angle of attack = attitude angle - flight path angle (no wind)
 ```
 
 `C_L(alpha)` and `C_D(alpha)` are **approximations** shaped like published discus data (low-aspect-ratio wing: lift slope ~1.6 per radian, small lift at zero angle from the dished profile, quadratic drag growth, stall near 25 degrees, then flat-plate behaviour). They follow the qualitative shape in Frohlich (1981), *Aerodynamic and mechanical forces in discus flight*, Am. J. Phys. 49, and Hubbard & Cheng (2007), *Optimal discus trajectories*, J. Biomech. 40, but the numbers are not copied from those papers. Simplifications: the disc keeps a fixed attitude in flight (gyroscopic stability), there is no pitching moment or precession, and crosswind uses a small roll-bank gain so the disc actually drifts.
+
+**Tuning.** Full power is 25.0 m/s. A *perfect* throw (dial centred, sensible nose angle) lands about 66-69 m in still air, and the 74.35 m world record needs a perfect throw plus a good headwind or a lucky bounce off the cast, so it is rare but possible (`tests/physics.test.mjs` sweeps 200 perfect throws and checks the median sits between 62 and 72 m). A 3-4 m/s headwind adds roughly 2.5-3.5 m.
 
 **The headwind quirk.** Lift grows with airspeed squared. A headwind raises the air-relative speed without slowing the disc over the ground, so a well-set nose angle turns it into extra lift and the discus flies **farther** into a breeze (and a tailwind costs distance). After each throw the game re-simulates your exact release in still air and tells you the gain, plus the nose angle your coach would have picked. Real-world benchmark: men's WR **74.35 m**, Mykolas Alekna, 2024 (a reference mark painted on the pitch, not a claim about this model).
 
@@ -55,12 +62,14 @@ alpha  = angle of attack = attitude angle - flight path angle (no wind)
 ## Tests
 
 ```bash
-node --test tests/            # 12 physics tests (Node 18+; `tests/index.js` makes the directory form work on Node 22)
-node tests/smoke.mjs          # Playwright smoke: real input + scripted throw, no console errors, screenshots to docs/shots/
-node scripts/record-gif.mjs   # regenerates docs/gameplay.gif (needs ffmpeg)
+npm test                      # unit tests + browser smoke test
+node --test tests/            # 20 unit tests: physics, tuning, announcer (Node 18+; `tests/index.js` makes the directory form work on Node 22)
+node tests/smoke.mjs          # Playwright smoke test; screenshots go to tests/out/ (git-ignored)
+node tests/smoke.mjs --docs   # same, but refreshes the committed docs/shots/ on purpose
+node scripts/record-gif.mjs   # regenerates docs/gameplay.gif (needs ffmpeg, targets <= 2.4 MB)
 ```
 
-The physics suite checks: vacuum range vs the analytic projectile formula (<1%), headwind beats still air for a well-attituded throw, extreme angle of attack stalls and shortens range, a realistic 25 m/s / 35 deg release lands 55-75 m, plus determinism, crosswind symmetry and the density model. `tests/smoke.mjs` expects Playwright at `$HOME/.claude/scripts/node_modules/playwright`; edit the `require` path if yours lives elsewhere.
+The unit suite checks: vacuum range vs the analytic projectile formula (<1%), headwind beats still air for a well-attituded throw, extreme angle of attack stalls and shortens range, a realistic 25 m/s / 35 deg release lands 55-75 m, determinism, crosswind symmetry, the density model, the perfect-throw calibration sweep, and the announcer (3+ variants per line, no repeats within 3 uses, teaching lines capitalised). The smoke test runs in Chromium at 1440x900, 390x844 and 844x390 (touch) through the real input path, including an instant tap / same-frame press+release and a poisoned release (regression test for a NaN lock-up), and asserts a finite camera, a result within 12 simulated seconds, 44 px tool buttons, 11 px minimum HUD text and a result card that overlaps nothing. It expects Playwright at `$HOME/.claude/scripts/node_modules/playwright`; edit the `require` path if yours lives elsewhere.
 
 ## Tech
 

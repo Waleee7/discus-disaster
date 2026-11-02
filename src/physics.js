@@ -20,7 +20,7 @@
 //   * Frohlich, C. (1981) "Aerodynamic and mechanical forces in discus flight", Am. J. Phys. 49.
 //   * Hubbard, M. & Cheng, K.B. (2007) "Optimal discus trajectories", J. Biomechanics 40.
 //   * Ganslen, R.V. (1964) wind-tunnel work on discus lift/drag, for the qualitative shape.
-// Shape used here: a low-aspect-ratio wing (lift slope ~ 1.9/rad, small positive lift at
+// Shape used here: a low-aspect-ratio wing (lift slope ~ 1.6/rad, small positive lift at
 // alpha = 0 from the dished camber, induced-drag-like quadratic drag growth), which stalls
 // around alpha ~ 25-30 deg and then behaves like a flat plate (C_L ~ sin(2a), C_D ~ sin^2(a)).
 //

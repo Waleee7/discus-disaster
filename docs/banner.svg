@@ -9,8 +9,8 @@
     <linearGradient id="turf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1f6a32"/><stop offset="1" stop-color="#0f3a1c"/></linearGradient>
     <linearGradient id="trail" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ff8a1f" stop-opacity="0"/><stop offset="1" stop-color="#ffd9a0" stop-opacity="0.95"/></linearGradient>
     <style>
-      .title{font:700 104px 'Oswald','Arial Narrow',Impact,sans-serif;letter-spacing:2px}
-      .sub{font:500 22px 'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:5px;fill:#ffb25c}
+      .title{font:400 100px Impact,Haettenschweiler,'Arial Narrow Bold','Arial Narrow',sans-serif;font-stretch:condensed;stroke:#03050c;stroke-width:10px;stroke-linejoin:round;paint-order:stroke}
+      .sub{font:700 21px 'SF Mono',Menlo,Consolas,'Courier New',monospace;fill:#ffb25c}
       .pulse{animation:pulse 3.2s ease-in-out infinite}
       .blink{animation:blink 1.1s steps(2) infinite}
       .spin{transform-box:fill-box;transform-origin:center;animation:spin .45s ease-in-out infinite}
@@ -38,17 +38,17 @@
   </g>
   <rect y="298" width="1280" height="62" fill="url(#turf)"/>
   <g stroke="#f4f8ff" stroke-opacity=".7" stroke-width="2" fill="none"><path d="M180 360 L520 300"/><path d="M1100 360 L760 300"/><path d="M0 330 Q640 296 1280 330" opacity=".4"/></g>
-  <!-- pigeons -->
+  <!-- trajectory: arcs over the title, then dives into the flock on the right -->
+  <path class="slide" d="M -60 300 Q 640 -250 1340 300" fill="none" stroke="url(#trail)" stroke-width="5" stroke-linecap="round" stroke-dasharray="1500" stroke-dashoffset="1500"/>
+  <g><animateMotion dur="4.2s" repeatCount="indefinite" path="M -60 300 Q 640 -250 1340 300" keyTimes="0;1" keySplines=".3 .1 .5 1" calcMode="spline"/><g class="spin"><ellipse rx="24" ry="9" fill="#cfd6e6" stroke="#ff7a10" stroke-width="4"/></g></g>
+  <!-- pigeons: parked clear of the title (it ends at x=1030) -->
   <g fill="#8790a6">
-    <g transform="translate(980 150)"><ellipse rx="16" ry="9"/><ellipse class="flap" cx="-2" cy="-8" rx="18" ry="6" fill="#646d82"/><circle cx="-16" cy="-2" r="5" fill="#2f9e7e"/></g>
-    <g transform="translate(1040 120)"><ellipse rx="16" ry="9"/><ellipse class="flap" cx="-2" cy="-8" rx="18" ry="6" fill="#646d82" style="animation-delay:.12s"/><circle cx="-16" cy="-2" r="5" fill="#2f9e7e"/></g>
-    <g transform="translate(1100 165)"><ellipse rx="16" ry="9"/><ellipse class="flap" cx="-2" cy="-8" rx="18" ry="6" fill="#646d82" style="animation-delay:.2s"/><circle cx="-16" cy="-2" r="5" fill="#2f9e7e"/></g>
+    <g transform="translate(1130 112)"><ellipse rx="16" ry="9"/><ellipse class="flap" cx="-2" cy="-8" rx="18" ry="6" fill="#646d82"/><circle cx="-16" cy="-2" r="5" fill="#2f9e7e"/></g>
+    <g transform="translate(1190 146)"><ellipse rx="16" ry="9"/><ellipse class="flap" cx="-2" cy="-8" rx="18" ry="6" fill="#646d82" style="animation-delay:.12s"/><circle cx="-16" cy="-2" r="5" fill="#2f9e7e"/></g>
+    <g transform="translate(1135 178)"><ellipse rx="16" ry="9"/><ellipse class="flap" cx="-2" cy="-8" rx="18" ry="6" fill="#646d82" style="animation-delay:.2s"/><circle cx="-16" cy="-2" r="5" fill="#2f9e7e"/></g>
   </g>
-  <!-- trajectory -->
-  <path class="slide" d="M -60 300 Q 640 -150 1340 300" fill="none" stroke="url(#trail)" stroke-width="5" stroke-linecap="round" stroke-dasharray="1500" stroke-dashoffset="1500"/>
-  <g><animateMotion dur="4.2s" repeatCount="indefinite" path="M -60 300 Q 640 -150 1340 300" keyTimes="0;1" keySplines=".3 .1 .5 1" calcMode="spline"/><g class="spin"><ellipse rx="24" ry="9" fill="#cfd6e6" stroke="#ff7a10" stroke-width="4"/></g></g>
-  <!-- title -->
-  <text x="640" y="200" text-anchor="middle" class="title"><tspan fill="#f4f8ff">DISCUS </tspan><tspan fill="#ff8a1f">DISASTER</tspan></text>
-  <text x="640" y="240" text-anchor="middle" class="sub">REAL LIFT. REAL DRAG. UNREAL PIGEONS.</text>
-  <text x="1240" y="342" text-anchor="end" class="sub blink" style="font-size:15px;letter-spacing:3px;fill:#f4f8ff">74.35 M &#183; REAL WR &#183; ALEKNA 2024</text>
+  <!-- title: textLength pins the width so every fallback font fills the same box (x 250..1030) -->
+  <text x="640" y="212" text-anchor="middle" class="title" textLength="780" lengthAdjust="spacingAndGlyphs"><tspan fill="#f4f8ff">DISCUS </tspan><tspan fill="#ff8a1f">DISASTER</tspan></text>
+  <text x="640" y="256" text-anchor="middle" class="sub" textLength="640" lengthAdjust="spacing">REAL LIFT. REAL DRAG. UNREAL PIGEONS.</text>
+  <text x="1240" y="342" text-anchor="end" class="sub blink" style="font-size:15px;fill:#f4f8ff" textLength="330" lengthAdjust="spacing">74.35 M &#183; REAL WR &#183; ALEKNA 2024</text>
 </svg>

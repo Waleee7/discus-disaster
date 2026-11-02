@@ -1,9 +1,10 @@
-// Records docs/gameplay.gif: one human-style throw (real Space key hold/release), captured frame-by-frame with the
-// deterministic stepper (window.__debug.advance), then palette-optimised with ffmpeg.
+// Records docs/gameplay.gif: ONE STAGED throw (real Space key hold/release, but a hand-picked layout seed and a pinned
+// obstacle clock so the pigeon pass lines up), captured frame-by-frame with the deterministic stepper
+// (window.__debug.advance), then palette-optimised with ffmpeg to <= 2.4 MB.
 //   node scripts/record-gif.mjs
 import { createRequire } from 'node:module';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, statSync, copyFileSync } from 'node:fs';
+import { mkdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,7 +44,7 @@ const shot = async (dt, opts) => {
   return f;
 };
 
-for (let i = 0; i < 4; i++) await shot(1 / FPS); // idle in the circle
+for (let i = 0; i < 3; i++) await shot(1 / FPS); // idle in the circle
 await page.keyboard.down('Space'); // real input path
 let guard = 0;
 while (guard++ < 200) {
@@ -72,20 +73,22 @@ while (guard++ < 400) {
   void f;
 }
 await page.waitForTimeout(500);
-for (let i = 0; i < 9; i++) await shot(1 / FPS);
-const info = await page.evaluate(() => window.__debug.game.cur.rec.result);
-console.log('recorded', n, 'frames; result', JSON.stringify({ distance: info.distance, foul: info.foul }));
+for (let i = 0; i < 6; i++) await shot(1 / FPS);
+const info = await page.evaluate(() => ({ ...window.__debug.game.cur.rec.result, hits: window.__debug.game.cur.rec.hits }));
+console.log('recorded', n, 'frames; result', JSON.stringify({ distance: info.distance, foul: info.foul, hits: info.hits }));
+if (info.foul || !info.hits.length) console.warn('WARNING: staged throw no longer lines up (foul or no pigeon strike) - rescan seeds with scripts/scan-seeds.mjs');
 await browser.close();
 server.kill();
 
 const out = path.join(ROOT, 'docs', 'gameplay.gif');
 // keep every Nth captured frame (time-lapse feel) so the crowd noise doesn't blow the size budget
+const BUDGET_MB = 2.4;
 const run = (keep, colors, w, dither) =>
   execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', path.join(FRAMES, 'f%04d.png'), '-vf',
     `select='not(mod(n,${keep}))',setpts=N/(${FPS}*TB),scale=${w}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=${colors}:stats_mode=diff[p];[b][p]paletteuse=dither=${dither}:diff_mode=rectangle`, '-r', String(FPS), '-loop', '0', out]);
-for (const [keep, colors, dither] of [[2, 96, 'none'], [2, 64, 'none'], [2, 48, 'none'], [3, 96, 'none']]) {
-  run(keep, colors, 720, dither);
+for (const [keep, colors, w] of [[2, 64, 640], [2, 48, 600], [2, 40, 560], [3, 48, 560], [3, 32, 520]]) {
+  run(keep, colors, w, 'none');
   const mb = statSync(out).size / 1048576;
-  console.log(`gif keep 1/${keep} colors=${colors} w=720 dither=${dither}: ${mb.toFixed(2)} MB`);
-  if (mb <= 5.7) break;
+  console.log(`gif keep 1/${keep} colors=${colors} w=${w}: ${mb.toFixed(2)} MB`);
+  if (mb <= BUDGET_MB) break;
 }

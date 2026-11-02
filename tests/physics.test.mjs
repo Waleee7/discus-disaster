@@ -14,6 +14,7 @@ import {
   G,
   DEG,
 } from '../src/physics.js';
+import { speedOf, releaseAngleOf, powerOf, V_MAX, V_MIN } from '../src/tuning.js';
 
 const run = (p) => simulate(p, { sampleEvery: 1e9 });
 const VACUUM = () => ({ cl: 0, cd: 0 });
@@ -117,4 +118,45 @@ test('helpers: feet/inches formatting and seeded PRNG are stable', () => {
   const r1 = mulberry32(42);
   const r2 = mulberry32(42);
   assert.equal(r1(), r2());
+});
+
+const median = (xs) => {
+  const a = [...xs].sort((x, y) => x - y);
+  return a[a.length >> 1];
+};
+
+test('tuning: a seed sweep of PERFECT throws in still air has a median between 62 and 72 m', () => {
+  const rnd = mulberry32(2024);
+  const out = [];
+  for (let i = 0; i < 200; i++) {
+    const psi = (rnd() * 2 - 1) * 4; // inside the PERFECT window (|psi| <= 4 deg)
+    const attitude = 20 + rnd() * 8; // sensible nose angles
+    out.push(run({ speed: speedOf(1), releaseAngle: releaseAngleOf(psi), heading: psi * (17.46 / 40), attitude, wind: { x: 0, z: 0 } }).distance);
+  }
+  const m = median(out);
+  assert.ok(m >= 62 && m <= 72, `median perfect throw ${m.toFixed(1)} m (min ${Math.min(...out).toFixed(1)}, max ${Math.max(...out).toFixed(1)})`);
+  assert.ok(Math.max(...out) < 74.35, 'a perfect throw in still air never reaches the 74.35 m world record');
+});
+
+test('tuning: the world record needs a perfect throw plus a headwind; headwind gain stays at a few metres', () => {
+  const base = { speed: speedOf(1), releaseAngle: releaseAngleOf(0), attitude: 25 };
+  const still = run(base).distance;
+  for (const hw of [3, 4]) {
+    const gain = run({ ...base, wind: { x: -hw } }).distance - still;
+    assert.ok(gain > 1 && gain < 6, `headwind ${hw} m/s gains ${gain.toFixed(2)} m`);
+  }
+  assert.ok(run({ ...base, wind: { x: -6 } }).distance - still < 8, 'even a 6 m/s headwind is not a cheat code');
+});
+
+test('tuning: power and speed curves are finite, monotonic and bounded', () => {
+  let prev = -1;
+  for (let rot = 0; rot <= 2000; rot += 20) {
+    const p = powerOf(rot);
+    assert.ok(Number.isFinite(p) && p >= 0 && p <= 1);
+    assert.ok(speedOf(p) >= prev);
+    prev = speedOf(p);
+  }
+  assert.equal(speedOf(0), V_MIN);
+  assert.equal(speedOf(1), V_MAX);
+  assert.ok(Number.isFinite(releaseAngleOf(180)) && Number.isFinite(releaseAngleOf(-180)));
 });
