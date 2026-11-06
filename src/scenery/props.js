@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { ARENA, makeNoise, toTexture, radialTex, GeoBuilder, mat4, ringPoint, ringArc, mulberry32, clamp } from './util.js';
 import { SECTIONS } from './stands.js';
+import { CardBatch } from '../cards.js';
 
 const C = (h) => new THREE.Color(h);
 
@@ -145,6 +146,8 @@ export function buildProps(ctx) {
     ctx.contacts.push([-5.6, -6.5, 0.9, 0.9, 0, 0.4]);
   }
 
+  let flagX = 0;
+  let flagZ = 0;
   // --- officials by the sector (white polos, khaki), a clipboard table -----------------------------------------------
   {
     const A = 17.46 * (Math.PI / 180);
@@ -161,6 +164,28 @@ export function buildProps(ctx) {
     chairAt(-9.4, -9.7, 3.4, 0x24282d);
     person({ x: -9.4, z: -9.75, yaw: 0.3, pose: 'sit', top: 0xefece4, bottom: 0x6a5f48, skin: sk() });
     ctx.contacts.push([-9.6, -10.5, 1.8, 1.0, 0.3, 0.4]);
+    // real judging kit around the sector
+    const kit = (name, x, z, h, o) => {
+      ctx.cards.add(name, x, z, h, o);
+      ctx.contacts.push([x, z, h * 0.7, h * 0.5, 0, 0.35]);
+    };
+    kit('station', -12.5, -24, 1.75);
+    const [sx, sz] = at(46, 1, 2.3);
+    kit('prism', sx, sz, 2.1);
+    ctx.cards.add('reel', -9.75, -10.5, 0.32, { y: 0.78 });
+    kit('attempt', -11.6, -11.4, 1.35);
+    kit('chair', 7.4, -9.2, 1.0);
+    kit('rake', -8.2, -7.4, 0.95);
+    kit('broom', -7.2, -7.9, 0.95);
+    // the pigeons that stayed on the ground, and know what they did
+    for (const [name, d, off, h] of [['pigeonPeck', 19, -2.4, 0.3], ['pigeonFat', 27, 2.1, 0.42], ['pigeonPeck', 36, 1.2, 0.3], ['pigeonFat', 13, 3, 0.42]]) {
+      const [gx, gz] = at(d, off < 0 ? -1 : 1, -Math.abs(off));
+      kit(name, gx, gz, h);
+    }
+    // flag judge at the cage mouth: white flag for a fair throw, red for a foul
+    [flagX, flagZ] = at(11, 1, 2.0);
+    person({ x: flagX, z: flagZ, yaw: Math.atan2(-flagX, -flagZ) + Math.PI, pose: 'stand', top: 0xefece4, bottom: 0x1f2740, skin: sk() });
+    ctx.contacts.push([flagX, flagZ, 1.1, 1.1, 0, 0.45]);
   }
 
   // --- pole vault (right) -------------------------------------------------------------------------------------------
@@ -290,5 +315,16 @@ export function buildProps(ctx) {
     m.renderOrder = 2;
     root.add(m);
   }
-  return {};
+  const flags = new CardBatch('kit-a', 1);
+  flags.mesh.name = 'judge-flag';
+  root.add(flags.mesh);
+  keep(flags.mesh.geometry);
+  keep(flags.mesh.material);
+  return {
+    /** 'fair', 'foul' or null to lower the flag. */
+    setJudgeCall(call) {
+      if (call) flags.set(0, call === 'foul' ? 'flagRed' : 'flagWhite', flagX, 1.42, flagZ, { h: 0.95 });
+      else flags.hide(0);
+    },
+  };
 }

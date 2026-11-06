@@ -20,6 +20,10 @@ Built by a real college discus thrower who also writes software. No build step, 
 <p align="center"><img src="docs/shots/desktop-1440x900-15-college-sunset-ready.png" alt="College meet at hot sunset: sun, long net shadows" width="49%"> <img src="docs/shots/mobile-390x844-13-venue-weather.png" alt="Phone start screen with the venue and weather pickers" width="24%"> <img src="docs/shots/mobile-390x844-12-swap.png" alt="Phone result card with the change-athlete button" width="24%"></p>
 <p align="center"><sub>The GIF is a <b>staged</b> throw in the World Championships Stadium (venue pick, a real PLAY click, the technique picker, then a key hold), but a hand-picked wind/obstacle seed and a pinned obstacle clock so the pigeon pass lines up, recorded as a time-lapse to stay under 2.5 MB. Your own throws will be messier.</sub></p>
 
+## Real kit (art pass)
+
+Green-screen sheets generated in Google Flow live in `art-src/`. `node scripts/build-art.mjs` keys them into `art/*.webp` and `src/artAtlas.js`, and [`src/cards.js`](src/cards.js) draws them as camera-facing cards in one draw call per sheet. So far: real rock pigeons with a wing-flap flipbook and a feather burst, a hot dog cart with three views, a wrecked state and flying hot dogs, cones, sector markers, a total station, a prism pole, a judge's chair, and a flag judge who raises white for a fair throw and red for a foul. The code also got a see-through 6 cm cage net, galvanised posts, and a closer-to-real steel-rim discus. Physics and scoring are untouched.
+
 ## How it plays
 
 | | **Rookie** (default) | **Pro** |

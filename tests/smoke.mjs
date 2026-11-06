@@ -79,6 +79,7 @@ async function openFresh(name, viewport, mobile, opts = {}) {
   page.on('requestfailed', (r) => errors.push(`${name}: requestfailed: ${r.url()} ${r.failure()?.errorText}`));
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForFunction(() => !!window.__debug, null, { timeout: 30000 });
+  assert.equal(await page.evaluate(() => window.__debug.artReady()), true, 'painted art sheets load');
   await page.evaluate(() => document.fonts.ready);
   await page.evaluate(() => window.__debug.manual(true));
   return { ctx, page };

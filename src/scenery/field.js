@@ -366,47 +366,18 @@ export function buildField(ctx) {
   // --- distance markers: cones (5 m), flags (10 m), numbered boards (20..70) --------------------------------
   {
     const r = mulberry32(41);
-    const coneGeo = new THREE.ConeGeometry(0.1, 0.3, 10, 1, true);
-    coneGeo.translate(0, 0.15, 0);
-    const baseGeo = new THREE.BoxGeometry(0.26, 0.015, 0.26);
-    baseGeo.translate(0, 0.0075, 0);
-    const mkCone = new GeoBuilder();
-    const coneMat = keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, side: THREE.DoubleSide }));
-    const flagB = new GeoBuilder();
-    const poleGeo = new THREE.CylinderGeometry(0.012, 0.014, 1.6, 6);
-    poleGeo.translate(0, 0.8, 0);
-    const flagShape = new THREE.Shape();
-    flagShape.moveTo(0, 0);
-    flagShape.lineTo(0.5, -0.12);
-    flagShape.lineTo(0, -0.28);
-    const flagGeo = new THREE.ShapeGeometry(flagShape);
-    const out = new THREE.Vector3();
-    const c1 = new THREE.Color(0xff6a14);
-    const c2 = new THREE.Color(0xf2c310);
-    const cW = new THREE.Color(0xe8e8e0);
-    const flagCols = [0xe53a2f, 0xf2c310, 0xf4f4ee, 0x1f6fe0];
     for (const s of [-1, 1]) {
       for (let d = 15; d <= 85; d += 5) {
         const rad = d + R0;
         const perp = new THREE.Vector3(s * Math.cos(A), 0, Math.sin(A));
         const p = new THREE.Vector3(s * rad * Math.sin(A), 0, -rad * Math.cos(A)).addScaledVector(perp, 0.55 + (r() - 0.5) * 0.2);
         if (d % 10 === 5) {
-          const tilt = (r() - 0.5) * 0.18;
-          mkCone.add(coneGeo, mat4(p.x, 0, p.z, r() * 6, 1, 1, 1, tilt, tilt * 0.6), r() < 0.7 ? c1 : c2, { jitter: 0.1 });
-          mkCone.add(baseGeo, mat4(p.x, 0, p.z, r() * 6), cW, { jitter: 0.1 });
+          ctx.cards.add('cone', p.x, p.z, 0.42);
         } else {
-          // flag on a thin pole, leaning a hair, pennant streaming slightly downwind (towards +x)
-          const lean = (r() - 0.5) * 0.06;
-          flagB.add(poleGeo, mat4(p.x, 0, p.z, 0, 1, 1, 1, lean, lean), new THREE.Color(0xdfe3e6), { jitter: 0.06 });
-          flagB.add(flagGeo, mat4(p.x + 0.02, 1.52, p.z, s > 0 ? -0.5 + r() * 0.3 : -2.6 - r() * 0.3, 1, 1, 1, 0, 0), new THREE.Color(flagCols[Math.floor(r() * flagCols.length)]), { jitter: 0.1 });
-          // backside of the pennant so it is visible from either side
-          flagB.add(flagGeo, mat4(p.x + 0.02, 1.52, p.z, (s > 0 ? -0.5 : -2.6) + Math.PI, 1, 1, 1, 0, 0), new THREE.Color(0xd8d8d0), { jitter: 0.1 });
+          ctx.cards.add('marker', p.x, p.z, 1.15);
         }
       }
     }
-    void out;
-    mk(mkCone.build(), coneMat, 'cones');
-    mk(flagB.build(), keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, side: THREE.DoubleSide })), 'flags');
 
     // numbered boards
     const nums = [20, 30, 40, 50, 60, 70];

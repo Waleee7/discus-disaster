@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { DEG } from './physics.js';
 
-export const DISCUS_VIS_SCALE = 2.4; // broadcast scale: a real 22 cm disc is invisible from the follow cam
+export const DISCUS_VIS_SCALE = 1.7; // broadcast scale: a real 22 cm disc is invisible from the follow cam
 
 const M = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.65, metalness: 0.05, ...o });
 
@@ -24,7 +24,7 @@ export function buildDiscus() {
   const c = new THREE.Color();
   for (let i = 0; i < p.count; i++) {
     const r = Math.hypot(p.getX(i), p.getZ(i));
-    c.setHex(r > 0.099 ? 0xff7a10 : r < 0.045 ? 0xf4f8ff : 0x303744);
+    c.setHex(r > 0.105 ? 0xc9ced4 : r < 0.02 ? 0xe6ebf0 : 0xff7a10);
     colors.push(c.r, c.g, c.b);
   }
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));

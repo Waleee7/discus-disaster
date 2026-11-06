@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { weatherOf, windFor, gustFor, densityOf } from './weather.js';
 import { mulberry32 } from './physics.js';
 import { toThree } from './scene.js';
+import { CardBatch } from './cards.js';
+import { buildBlobShadow } from './actors.js';
 
 const M = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.7, ...o });
 const tri = (u) => 1 - 4 * Math.abs((((u % 1) + 1) % 1) - 0.5); // triangle wave -1..1 (u=0 -> -1)
@@ -61,6 +63,9 @@ export function buildObstacles(scene, fx) {
   const disposables = [];
   let L = makeLayout(1);
   const P = { x: 0, y: 0, z: 0 };
+  let cam = null;
+  const camRight = new THREE.Vector3();
+  const wings = ['flapUp', 'flapMid', 'flapDown', 'flapMid'];
 
   // ---------------------------------------------------------------- PIGEONS
   const flock = (() => {
@@ -190,6 +195,42 @@ export function buildObstacles(scene, fx) {
       const a = b.a0 + b.w * t;
       return [c[0] + Math.cos(a) * 3.2 * b.r, c[1] + Math.sin(a * 1.3) * 1.5, c[2] + Math.sin(a) * 3.2 * b.r];
     };
+    // Real pigeon art: one card per bird plus the feather burst. The primitives above only show if the art fails to load.
+    const cards = new CardBatch('kit-b', N + 1, { full: true });
+    cards.mesh.name = 'pigeon-cards';
+    root.add(cards.mesh);
+    disposables.push(cards);
+    cards.ready.then((ok) => {
+      if (ok) g.visible = false;
+    });
+    const drawBird = (b, i, t, q) => {
+      const hx = q.x - (b.lx ?? q.x);
+      const hz = q.z - (b.lz ?? q.z);
+      if (Math.abs(hx) + Math.abs(hz) > 1e-4) {
+        const l = Math.hypot(hx, hz);
+        b.hx = hx / l;
+        b.hz = hz / l;
+      }
+      b.lx = q.x;
+      b.lz = q.z;
+      if (!cam) return;
+      if (i === o.hitIdx && o.hitAt !== null && t >= o.hitAt) {
+        cards.set(i, 'flapDown', q.x, q.y, q.z, { span: 1.5, anchor: 0.5, rot: (t - o.hitAt) * 9 });
+        return;
+      }
+      const dx = cam.position.x - q.x;
+      const dz = cam.position.z - q.z;
+      const l = Math.hypot(dx, dz) || 1;
+      const along = ((b.hx || 0) * dx + (b.hz || 0) * dz) / l;
+      const beat = Math.sin(t * 16 + i);
+      if (along > 0.72) cards.set(i, 'birdFront', q.x, q.y, q.z, { span: 1.9, anchor: 0.5, squash: 0.8 + 0.2 * beat });
+      else if (along < -0.72) cards.set(i, 'birdBelow', q.x, q.y, q.z, { span: 1.9, anchor: 0.5, squash: 0.85 + 0.15 * beat });
+      else {
+        camRight.setFromMatrixColumn(cam.matrixWorld, 0);
+        const frame = (t * 0.7 + i * 0.37) % 3 < 0.5 ? 'glide' : wings[Math.floor(t * 10 + i * 1.7) & 3];
+        cards.set(i, frame, q.x, q.y, q.z, { span: 1.5, anchor: 0.5, flip: (b.hx || 0) * camRight.x + (b.hz || 0) * camRight.z < 0 });
+      }
+    };
     const o = {
       key: 'pigeon',
       hitAt: null,
@@ -209,6 +250,7 @@ export function buildObstacles(scene, fx) {
               b.wr.rotation.z = 0.3;
               toThree(p[0], p[1], p[2], b.g.position);
               b.pos = p;
+              drawBird(b, i, t, b.g.position);
               return;
             }
             p = [p0[0] + b.flee[0] * d, p0[1] + b.flee[1] * d - 1.2 * d * d, p0[2] + b.flee[2] * d];
@@ -225,7 +267,11 @@ export function buildObstacles(scene, fx) {
           b.wl.rotation.z = -f;
           b.wr.rotation.z = f;
           b.g.position.y += Math.cos(t * 22 + i) * 0.05;
+          drawBird(b, i, t, b.g.position);
         });
+        const d = this.hitAt === null ? -1 : t - this.hitAt;
+        if (d >= 0 && d < 1.6) cards.set(N, 'feathers', this.bx, this.by, this.bz, { span: 1.6 + d * 3, anchor: 0.5, rot: d * 0.6, alpha: 1 - d / 1.6 });
+        else cards.hide(N);
       },
       test(x, y, z) {
         for (let i = 0; i < birds.length; i++) {
@@ -240,6 +286,9 @@ export function buildObstacles(scene, fx) {
       onHit(t, x, y, z) {
         this.hitAt = t;
         const q = toThree(x, y, z);
+        this.bx = q.x;
+        this.by = q.y;
+        this.bz = q.z;
         fx.particles.burst([q.x, q.y, q.z], { count: 40, speed: 7, color: [0.9, 0.95, 1], size: 0.4, life: 1.6, gravity: 2, drag: 1.2 });
         fx.debris.spawn('feather', [q.x, q.y, q.z], 0xf4f8ff, 5, 14, 1.8);
       },
@@ -356,7 +405,8 @@ export function buildObstacles(scene, fx) {
   const vendor = (() => {
     const g = new THREE.Group();
     const inner = new THREE.Group();
-    inner.scale.setScalar(1.35);
+    inner.scale.setScalar(1.08);
+    inner.position.z = 1.45; // walks behind the cart, pushing it
     g.add(inner);
     root.add(g);
     const skin = M(0xc98a5e);
@@ -373,22 +423,51 @@ export function buildObstacles(scene, fx) {
     torso.scale.set(1.2, 1, 0.8);
     add(new THREE.SphereGeometry(0.12, 12, 8), skin, 0, 1.65, 0);
     add(new THREE.CylinderGeometry(0.1, 0.13, 0.2, 10), M(0xf4f8ff, { emissive: 0x303030 }), 0, 1.86, 0);
-    add(new THREE.BoxGeometry(0.62, 0.05, 0.4), M(0x303744), 0, 0.95, -0.38); // tray
+    for (const x of [-0.27, 0.27]) {
+      const arm = add(new THREE.CapsuleGeometry(0.05, 0.5, 3, 6), skin, x, 1.08, -0.28);
+      arm.rotation.x = 1.15;
+    }
     add(new THREE.BoxGeometry(0.36, 0.5, 0.03), M(0xf4f8ff), 0, 1.02, -0.215); // apron
     add(new THREE.BoxGeometry(0.36, 0.06, 0.035), M(0xffd23f), 0, 1.1, -0.22); // mustard stripe
     for (const x of [-0.05, 0.05]) add(new THREE.SphereGeometry(0.016, 6, 6), M(0x10131c), x, 1.67, -0.115);
     add(new THREE.BoxGeometry(0.09, 0.014, 0.02), M(0x10131c), 0, 1.6, -0.115);
-    add(new THREE.CylinderGeometry(0.035, 0.04, 0.2, 8), M(0xffd23f), 0.25, 1.06, -0.4); // mustard bottle
-    for (let i = 0; i < 3; i++) {
-      const bun = add(new THREE.CapsuleGeometry(0.06, 0.26, 3, 6), M(0xe8b66a), -0.15 + i * 0.15, 1.0, -0.38);
-      bun.rotation.z = Math.PI / 2;
-      bun.rotation.y = 0.3;
-    }
-    add(new THREE.CylinderGeometry(0.02, 0.02, 3.0, 6), M(0xe9e2d5), 0.42, 1.5, 0.05);
-    const signTex = label('HOT\nDOGS $9', 256, 128, '#ffd23f', '#c0151f');
-    disposables.push(signTex);
-    const sign = add(new THREE.PlaneGeometry(1.1, 0.55), new THREE.MeshBasicMaterial({ map: signTex, side: THREE.DoubleSide, toneMapped: false }), 0.42, 2.85, 0.05);
-    void sign;
+    // The real cart: three views, a wrecked state, and hot dogs thrown clear on impact.
+    const DOGS = ['dog1', 'sausage', 'dog2', 'dog3', 'sausage', 'dog4', 'dog1', 'sausage'];
+    const cart = new CardBatch('hotdog-a', 1 + DOGS.length);
+    cart.mesh.name = 'cart-cards';
+    root.add(cart.mesh);
+    disposables.push(cart);
+    const cartShadow = buildBlobShadow();
+    cartShadow.scale.set(3.6, 2.2, 1);
+    root.add(cartShadow);
+    const drawCart = (t, q, walk, hitAt) => {
+      const px = g.position.x;
+      const pz = g.position.z;
+      cartShadow.position.x = px;
+      cartShadow.position.z = pz;
+      if (!cam) return;
+      if (hitAt !== null && t >= hitAt) {
+        const d = t - hitAt;
+        cart.set(0, 'cartWreck', px, 0, pz, { h: 2.7 });
+        DOGS.forEach((name, i) => {
+          const a = i * 0.785 + 0.4;
+          const sp = 2.2 + (i % 3) * 1.1;
+          const y = Math.max(0.12, 1.1 + (5.5 + (i % 4)) * d - 4.9 * d * d);
+          const k = y > 0.12 ? d : (5.5 + (i % 4) + Math.sqrt((5.5 + (i % 4)) ** 2 + 19.6 * 0.98)) / 9.8;
+          cart.set(1 + i, name, px + Math.cos(a) * sp * k, y, pz + Math.sin(a) * sp * k, { span: name === 'sausage' ? 0.3 : 0.42, anchor: 0.5, rot: y > 0.12 ? d * (4 + i) : i });
+        });
+        return;
+      }
+      for (let i = 0; i < DOGS.length; i++) cart.hide(1 + i);
+      const dx = cam.position.x - px;
+      const dz = cam.position.z - pz;
+      const along = Math.abs(dx) / (Math.hypot(dx, dz) || 1); // the cart rolls along three.js x
+      camRight.setFromMatrixColumn(cam.matrixWorld, 0);
+      const flip = walk * camRight.x < 0;
+      if (along > 0.9) cart.set(0, 'cartFront', px, 0, pz, { h: 2.55 });
+      else if (along > 0.5) cart.set(0, 'cartQuarter', px, 0, pz, { h: 2.55, flip });
+      else cart.set(0, 'cartSide', px, 0, pz, { h: 2.55, flip });
+    };
     const o = {
       key: 'vendor',
       hitAt: null,
@@ -406,10 +485,10 @@ export function buildObstacles(scene, fx) {
           q = this.posAt(this.hitAt);
           roll = smooth(d / 0.35) * 1.5 - smooth((d - 3) / 0.6) * 1.5;
           q = [q[0] + 1.5 * smooth(d / 0.5), 0, q[2]];
-          if (d > 3.7) q = this.posAt(t);
         }
         toThree(q[0], q[1], q[2], g.position);
         g.rotation.set(0, p1[2] > p[2] ? -Math.PI / 2 : Math.PI / 2, 0);
+        drawCart(t, q, p1[2] > p[2] ? 1 : -1, this.hitAt);
         inner.rotation.set(roll * 1.0, 0, 0);
         inner.position.y = roll * 0.0;
         this.cur = q;
@@ -423,8 +502,6 @@ export function buildObstacles(scene, fx) {
       onHit(t, x, y, z) {
         this.hitAt = t;
         const q = toThree(x, y, z);
-        fx.debris.spawn('bun', [q.x, q.y + 0.5, q.z], 0xe8b66a, 9, 7, 1.4);
-        fx.debris.spawn('dog', [q.x, q.y + 0.6, q.z], 0xc0392b, 9, 9, 1.4);
         fx.particles.burst([q.x, q.y + 0.5, q.z], { count: 30, speed: 5, color: [1, 0.85, 0.1], size: 0.35, life: 1.2, gravity: 8 });
       },
       reset() {
@@ -617,6 +694,9 @@ export function buildObstacles(scene, fx) {
     setLayout(l) {
       L = l;
       list.forEach((o) => o.reset());
+    },
+    setCamera(c) {
+      cam = c;
     },
     update(t, dt) {
       list.forEach((o) => o.update(t, dt));

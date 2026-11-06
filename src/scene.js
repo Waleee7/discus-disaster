@@ -10,6 +10,7 @@ import { buildCage } from './scenery/cage.js';
 import { buildStands } from './scenery/stands.js';
 import { buildLighting } from './scenery/lighting.js';
 import { buildProps } from './scenery/props.js';
+import { StaticCards } from './cards.js';
 import { buildWeatherFx } from './scenery/wx.js';
 import { buildBowl } from './scenery/bowl.js';
 import { gustFactor } from './physics.js';
@@ -40,6 +41,7 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
     keep,
     noise: makeNoise(7, 256),
     contacts: [],
+    cards: new StaticCards(),
     glowTex: radialTex(128, [[0, 'rgba(255,255,255,1)'], [0.07, 'rgba(255,244,225,0.85)'], [0.22, 'rgba(255,225,185,0.22)'], [0.55, 'rgba(255,215,170,0.05)'], [1, 'rgba(255,210,160,0)']]),
   };
   keep({ map: ctx.glowTex, dispose() {} });
@@ -59,7 +61,8 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
     const l = Math.hypot(dx, dz) || 1;
     ctx.contacts.push([(dx / l) * 0.9, (dz / l) * 0.9, 0.8, 2.6, Math.atan2(dx, dz), 0.07]);
   }
-  buildProps(ctx);
+  const props = buildProps(ctx);
+  ctx.cards.build(root, keep);
   const crowd = stands.crowd;
   keep(crowd.mat);
 
@@ -108,6 +111,7 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
     root,
     crowdMat: crowd.mat,
     tier,
+    setJudgeCall: props.setJudgeCall,
     setWind(w, gust = null) {
       state.wind = w;
       state.gust = gust;

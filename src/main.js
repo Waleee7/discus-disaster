@@ -1,5 +1,6 @@
 import { Game } from './game.js';
 import { makeLayout } from './obstacles.js';
+import { artReady } from './cards.js';
 
 // The stadium paints its signage and jersey numbers into canvases once, at build time: wait for the webfonts first so
 // they use Oswald, not the fallback. Bounded (and failure-proof) so an offline / blocked font host never blocks the game.
@@ -39,6 +40,7 @@ window.__debug = {
     return promise;
   },
   makeLayout,
+  artReady,
   skipIntro: () => game.closeStart(true),
   setMode: (id) => game.setMode(id),
   setPersona: (id) => game.setPersona(id),

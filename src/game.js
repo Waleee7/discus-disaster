@@ -16,6 +16,7 @@ import { buildStadium, toThree } from './scene.js';
 import { buildDiscus, buildThrower, buildTape, buildBlobShadow, buildRivalMarker } from './actors.js';
 import { Particles, Debris, disposeTree } from './fx.js';
 import { buildObstacles, makeLayout } from './obstacles.js';
+import { setArtWeather } from './cards.js';
 import { Announcer, rankFor } from './announcer.js';
 import { Haptics } from './haptics.js';
 import { Input } from './input.js';
@@ -138,6 +139,7 @@ export class Game {
     this.particles = new Particles(this.scene);
     this.debris = new Debris(this.scene);
     this.obstacles = buildObstacles(this.scene, { particles: this.particles, debris: this.debris });
+    this.obstacles.setCamera(this.camera);
     this.thrower = buildThrower(personaOf(this.personaId));
     this.thrower.setStyle(this.tech.pose);
     this.scene.add(this.thrower.group);
@@ -443,6 +445,7 @@ export class Game {
   /** Show the current weather (fog, sky, rain, sun) and, optionally, re-roll this throw's wind for it. */
   applyWeather(relayout = true) {
     this.stadium.setWeather(weatherOf(this.weatherId));
+    setArtWeather(this.weatherId);
     if (relayout) this.applyLayout(makeLayout(this.layout.seed, this.weatherId));
     this.applyModeUi();
   }
@@ -942,6 +945,7 @@ export class Game {
     this.glow.visible = false;
     this.shadow.visible = false;
     this.tape.hide();
+    this.stadium.setJudgeCall(null);
     this.dom.result.hidden = true;
   }
 
@@ -1014,6 +1018,7 @@ export class Game {
     this.dom.result.hidden = true;
     this.dom.replayTag.hidden = true;
     this.tape.hide();
+    this.stadium.setJudgeCall(null);
   }
 
   flashNow(text, sub = '', cls = '') {
@@ -1347,6 +1352,7 @@ export class Game {
       hw: -this.layout.wind.x,
     };
     this.stadium.setExcite(foul ? 0.15 : clamp(0.4 + distance / 90, 0.4, 1));
+    this.stadium.setJudgeCall(foul ? 'foul' : 'fair');
   }
 
   updateLanded(dt) {
@@ -1474,6 +1480,7 @@ export class Game {
     this.setShareLabel(null);
     this.announcer.say('final', {}, { priority: 3 });
     this.tape.hide();
+    this.stadium.setJudgeCall(null);
     if (this.daily && bestD > 0) store.set('dd-daily-played', this.dKey);
     this.finalInfo = { mark: bestD };
     // arcade initials prompt, a beat after the final card appears (game clock, so it also works under the test stepper)
@@ -1645,6 +1652,7 @@ export class Game {
     this.particles.clear();
     this.debris.clear();
     this.tape.hide();
+    this.stadium.setJudgeCall(null);
     this.obstacles.setLayout(rec.layout);
     this.stadium.setWind(rec.layout.wind, rec.layout.gust);
     const first = rec.samples[0];

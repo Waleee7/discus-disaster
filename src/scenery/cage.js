@@ -101,13 +101,13 @@ function paintPad(N, noise) {
   return c;
 }
 
-/** Knotted black netting, ~12 cm mesh: alpha is the cord, so alpha-to-coverage turns it into smoky mesh at range. */
+/** Knotted black netting, 6 cm mesh: alpha is the cord, so the mipmaps blend it into a see-through haze at range. */
 function paintNet(N) {
   const { c, g } = makeCanvas(N, N);
   g.clearRect(0, 0, N, N);
   const cells = 2;
   const cell = N / cells;
-  const w = Math.max(3, N * 0.045);
+  const w = Math.max(2, N * 0.028);
   g.lineCap = 'round';
   // diamond / square weave: slightly diagonal twisted cords read as real netting rather than a grid
   for (let i = 0; i <= cells; i++) {
@@ -162,7 +162,7 @@ export function buildCage(ctx) {
   const rnd = mulberry32(5);
 
   const metal = new GeoBuilder();
-  const steel = new THREE.Color(0x4a5560);
+  const steel = new THREE.Color(0x6f787e);
   const darkSteel = new THREE.Color(0x232930);
   const post = new THREE.CylinderGeometry(0.042, 0.05, 1, 8);
   post.translate(0, 0.5, 0);
@@ -198,10 +198,10 @@ export function buildCage(ctx) {
   // nets -------------------------------------------------------------------------------------------------------
   const netTex = toTexture(paintNet(S(256)), { wrap: true, aniso: 8 });
   const netMat = keep(
-    new THREE.MeshStandardMaterial({ map: netTex, color: 0xcfd6dc, roughness: 0.95, side: THREE.DoubleSide, alphaToCoverage: true, alphaTest: 0.02, transparent: false }),
+    new THREE.MeshStandardMaterial({ map: netTex, color: 0xcfd6dc, roughness: 0.95, side: THREE.DoubleSide, transparent: true, depthWrite: false }),
   );
   const netGeo = new GeoBuilder();
-  const MESH = 0.24; // metres per texture repeat (2 cells)
+  const MESH = 0.12; // metres per texture repeat (2 cells), so a real 6 cm mesh
   const panel = (a, b, ha, hb, { dip = 0.12, bulge = 0.1, seed = 1, bottom = 0.22 } = {}) => {
     const len = Math.hypot(b.x - a.x, b.z - a.z);
     const nx = Math.max(3, Math.ceil(len / 0.45));
