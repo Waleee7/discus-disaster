@@ -3,7 +3,7 @@
 // stands (terraces, crowd, banners, scoreboard), lighting (towers, haze, spotlights), props (tents, racks, trees, AO).
 // Physics frame -> three.js frame: (x, y, z) -> (z, y, -x), i.e. the throw heads down -Z.
 import * as THREE from 'three';
-import { ARENA, makeNoise, pickTier, radialTex } from './scenery/util.js';
+import { ARENA, makeNoise, pickTier, radialTex, singlePassTransparent } from './scenery/util.js';
 import { buildSky, FOG_COLOR } from './scenery/sky.js';
 import { buildField } from './scenery/field.js';
 import { buildCage } from './scenery/cage.js';
@@ -104,6 +104,7 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
     lights.setHaze(t.haze && !(state.weather && state.weather.tod === 'sunset'));
   };
   apply(tier);
+  singlePassTransparent(root);
   const down = { high: 'mid', mid: 'low', low: 'low' };
   const v = new THREE.Vector3();
   const dir = new THREE.Vector3();

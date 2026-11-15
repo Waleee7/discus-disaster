@@ -183,17 +183,21 @@ export function buildObstacles(scene, fx) {
         r: 0.4 + rnd() * 0.6,
         flee: [(rnd() - 0.5) * 16, 4 + rnd() * 7, (rnd() - 0.5) * 16],
         pos: [0, 0, 0],
+        p0: [0, 0, 0],
+        p1: [0, 0, 0],
+        size: 0.86 + rnd() * 0.28, // real flocks are not clones
+        shade: 0.6 + rnd() * 0.22, // blue-grey birds under night floods: never paper white
+        beat: 8.5 + rnd() * 2.5, // wingbeats per second (a rock pigeon flaps ~5-9 Hz; a touch faster reads better small)
+        ph: rnd() * 4,
       });
     }
-    const center = (t) => [
-      25 + 3.5 * Math.sin(0.42 * t + L.flockPhase),
-      11 + 1.6 * Math.sin(0.61 * t + L.flockPhase * 2),
-      7.5 * Math.sin(0.31 * t + L.flockPhase * 1.7),
-    ];
-    const birdPos = (b, t) => {
-      const c = center(t);
+    // positions are written into per-bird scratch arrays: the flock is re-placed every frame, so no garbage per frame
+    const birdPos = (b, t, out) => {
       const a = b.a0 + b.w * t;
-      return [c[0] + Math.cos(a) * 3.2 * b.r, c[1] + Math.sin(a * 1.3) * 1.5, c[2] + Math.sin(a) * 3.2 * b.r];
+      out[0] = 25 + 3.5 * Math.sin(0.42 * t + L.flockPhase) + Math.cos(a) * 3.2 * b.r;
+      out[1] = 11 + 1.6 * Math.sin(0.61 * t + L.flockPhase * 2) + Math.sin(a * 1.3) * 1.5;
+      out[2] = 7.5 * Math.sin(0.31 * t + L.flockPhase * 1.7) + Math.sin(a) * 3.2 * b.r;
+      return out;
     };
     // Real pigeon art: one card per bird plus the feather burst. The primitives above only show if the art fails to load.
     const cards = new CardBatch('kit-b', N + 1, { full: true });
@@ -203,6 +207,9 @@ export function buildObstacles(scene, fx) {
     cards.ready.then((ok) => {
       if (ok) g.visible = false;
     });
+    // One reusable options object: drawBird runs for every bird, every frame.
+    const OPT = { span: 1.5, anchor: 0.5, rot: 0, flip: false, shade: 1, widen: 1, squash: 1, alpha: 1 };
+    const FOPT = { span: 1.6, anchor: 0.5, rot: 0, alpha: 1, shade: 0.8 };
     const drawBird = (b, i, t, q) => {
       const hx = q.x - (b.lx ?? q.x);
       const hz = q.z - (b.lz ?? q.z);
@@ -214,22 +221,28 @@ export function buildObstacles(scene, fx) {
       b.lx = q.x;
       b.lz = q.z;
       if (!cam) return;
+      OPT.shade = b.shade;
+      OPT.squash = 1;
       if (i === o.hitIdx && o.hitAt !== null && t >= o.hitAt) {
-        cards.set(i, 'flapDown', q.x, q.y, q.z, { span: 1.5, anchor: 0.5, rot: (t - o.hitAt) * 9 });
+        OPT.span = 1.5 * b.size;
+        OPT.rot = (t - o.hitAt) * 9;
+        OPT.flip = false;
+        OPT.widen = 1;
+        cards.set(i, 'flapDown', q.x, q.y, q.z, OPT);
         return;
       }
+      // Always a flapping side view. The old head-on / from-below cards were static spread wings, which at stadium
+      // distance read as little grey jets. Flying toward or away from the camera, the side view is foreshortened instead.
       const dx = cam.position.x - q.x;
       const dz = cam.position.z - q.z;
       const l = Math.hypot(dx, dz) || 1;
-      const along = ((b.hx || 0) * dx + (b.hz || 0) * dz) / l;
-      const beat = Math.sin(t * 16 + i);
-      if (along > 0.72) cards.set(i, 'birdFront', q.x, q.y, q.z, { span: 1.9, anchor: 0.5, squash: 0.8 + 0.2 * beat });
-      else if (along < -0.72) cards.set(i, 'birdBelow', q.x, q.y, q.z, { span: 1.9, anchor: 0.5, squash: 0.85 + 0.15 * beat });
-      else {
-        camRight.setFromMatrixColumn(cam.matrixWorld, 0);
-        const frame = (t * 0.7 + i * 0.37) % 3 < 0.5 ? 'glide' : wings[Math.floor(t * 10 + i * 1.7) & 3];
-        cards.set(i, frame, q.x, q.y, q.z, { span: 1.5, anchor: 0.5, flip: (b.hx || 0) * camRight.x + (b.hz || 0) * camRight.z < 0 });
-      }
+      const along = Math.abs(((b.hx || 0) * dx + (b.hz || 0) * dz) / l);
+      camRight.setFromMatrixColumn(cam.matrixWorld, 0);
+      OPT.span = 1.45 * b.size;
+      OPT.rot = 0;
+      OPT.widen = 1 - 0.45 * along * along;
+      OPT.flip = (b.hx || 0) * camRight.x + (b.hz || 0) * camRight.z < 0;
+      cards.set(i, wings[Math.floor((t * b.beat + b.ph) * 4) & 3], q.x, q.y, q.z, OPT);
     };
     const o = {
       key: 'pigeon',
@@ -237,30 +250,33 @@ export function buildObstacles(scene, fx) {
       hitIdx: -1,
       meta: { label: 'PIGEON STRIKE', mult: 1.5, speedMul: 0.9, kick: 1.5 },
       update(t, dt) {
-        birds.forEach((b, i) => {
-          let p = birdPos(b, t);
+        for (let i = 0; i < birds.length; i++) {
+          const b = birds[i];
+          const p = birdPos(b, t, b.pos);
           let yaw;
           if (this.hitAt !== null && t >= this.hitAt) {
             const d = t - this.hitAt;
-            const p0 = birdPos(b, this.hitAt);
+            const p0 = birdPos(b, this.hitAt, b.p0);
             if (i === this.hitIdx) {
-              p = [p0[0] + 2 * d, Math.max(0.35, p0[1] - 4.9 * d * d + 1.5 * d), p0[2] + 0.5 * d];
+              p[0] = p0[0] + 2 * d;
+              p[1] = Math.max(0.35, p0[1] - 4.9 * d * d + 1.5 * d);
+              p[2] = p0[2] + 0.5 * d;
               b.g.rotation.set(d * 9, d * 6, d * 11);
               b.wl.rotation.z = -0.3;
               b.wr.rotation.z = 0.3;
               toThree(p[0], p[1], p[2], b.g.position);
-              b.pos = p;
               drawBird(b, i, t, b.g.position);
-              return;
+              continue;
             }
-            p = [p0[0] + b.flee[0] * d, p0[1] + b.flee[1] * d - 1.2 * d * d, p0[2] + b.flee[2] * d];
+            p[0] = p0[0] + b.flee[0] * d;
+            p[1] = p0[1] + b.flee[1] * d - 1.2 * d * d;
+            p[2] = p0[2] + b.flee[2] * d;
             yaw = Math.atan2(-b.flee[2], b.flee[0]); // phys velocity (fx, fz) -> three (fz, -fx)
           } else {
-            const p1 = birdPos(b, t + 0.1);
+            const p1 = birdPos(b, t + 0.1, b.p1);
             yaw = Math.atan2(-(p1[2] - p[2]), p1[0] - p[0]);
           }
           b.g.rotation.set(0, yaw, 0);
-          b.pos = p;
           toThree(p[0], p[1], p[2], b.g.position);
           // flap: both wing tips rise and fall together (right +z lifts, left -z lifts), body bobs against the beat
           const f = Math.sin(t * 22 + i) * 0.85 + 0.15;
@@ -268,10 +284,14 @@ export function buildObstacles(scene, fx) {
           b.wr.rotation.z = f;
           b.g.position.y += Math.cos(t * 22 + i) * 0.05;
           drawBird(b, i, t, b.g.position);
-        });
+        }
         const d = this.hitAt === null ? -1 : t - this.hitAt;
-        if (d >= 0 && d < 1.6) cards.set(N, 'feathers', this.bx, this.by, this.bz, { span: 1.6 + d * 3, anchor: 0.5, rot: d * 0.6, alpha: 1 - d / 1.6 });
-        else cards.hide(N);
+        if (d >= 0 && d < 1.6) {
+          FOPT.span = 1.6 + d * 3;
+          FOPT.rot = d * 0.6;
+          FOPT.alpha = 1 - d / 1.6;
+          cards.set(N, 'feathers', this.bx, this.by, this.bz, FOPT);
+        } else cards.hide(N);
       },
       test(x, y, z) {
         for (let i = 0; i < birds.length; i++) {
@@ -437,6 +457,8 @@ export function buildObstacles(scene, fx) {
     cart.mesh.name = 'cart-cards';
     root.add(cart.mesh);
     disposables.push(cart);
+    const COPT = { h: 2.55, flip: false };
+    const DOPT = { span: 0.42, anchor: 0.5, rot: 0 };
     const cartShadow = buildBlobShadow();
     cartShadow.scale.set(3.6, 2.2, 1);
     root.add(cartShadow);
@@ -446,16 +468,21 @@ export function buildObstacles(scene, fx) {
       cartShadow.position.x = px;
       cartShadow.position.z = pz;
       if (!cam) return;
+      COPT.flip = false;
       if (hitAt !== null && t >= hitAt) {
         const d = t - hitAt;
-        cart.set(0, 'cartWreck', px, 0, pz, { h: 2.7 });
-        DOGS.forEach((name, i) => {
+        COPT.h = 2.7;
+        cart.set(0, 'cartWreck', px, 0, pz, COPT);
+        for (let i = 0; i < DOGS.length; i++) {
+          const name = DOGS[i];
           const a = i * 0.785 + 0.4;
           const sp = 2.2 + (i % 3) * 1.1;
           const y = Math.max(0.12, 1.1 + (5.5 + (i % 4)) * d - 4.9 * d * d);
           const k = y > 0.12 ? d : (5.5 + (i % 4) + Math.sqrt((5.5 + (i % 4)) ** 2 + 19.6 * 0.98)) / 9.8;
-          cart.set(1 + i, name, px + Math.cos(a) * sp * k, y, pz + Math.sin(a) * sp * k, { span: name === 'sausage' ? 0.3 : 0.42, anchor: 0.5, rot: y > 0.12 ? d * (4 + i) : i });
-        });
+          DOPT.span = name === 'sausage' ? 0.3 : 0.42;
+          DOPT.rot = y > 0.12 ? d * (4 + i) : i;
+          cart.set(1 + i, name, px + Math.cos(a) * sp * k, y, pz + Math.sin(a) * sp * k, DOPT);
+        }
         return;
       }
       for (let i = 0; i < DOGS.length; i++) cart.hide(1 + i);
@@ -463,10 +490,9 @@ export function buildObstacles(scene, fx) {
       const dz = cam.position.z - pz;
       const along = Math.abs(dx) / (Math.hypot(dx, dz) || 1); // the cart rolls along three.js x
       camRight.setFromMatrixColumn(cam.matrixWorld, 0);
-      const flip = walk * camRight.x < 0;
-      if (along > 0.9) cart.set(0, 'cartFront', px, 0, pz, { h: 2.55 });
-      else if (along > 0.5) cart.set(0, 'cartQuarter', px, 0, pz, { h: 2.55, flip });
-      else cart.set(0, 'cartSide', px, 0, pz, { h: 2.55, flip });
+      COPT.h = 2.55;
+      COPT.flip = along > 0.9 ? false : walk * camRight.x < 0;
+      cart.set(0, along > 0.9 ? 'cartFront' : along > 0.5 ? 'cartQuarter' : 'cartSide', px, 0, pz, COPT);
     };
     const o = {
       key: 'vendor',
@@ -536,15 +562,7 @@ export function buildObstacles(scene, fx) {
         for (let i = 0; i < jets && dt > 0; i++) {
           const spd = this.hitAt !== null && t - this.hitAt < 2.5 ? 17 : 9;
           const aa = a + (i / jets) * 6.28 + Math.random() * 0.3;
-          fx.particles.emit({
-            p: [g.position.x, 0.85, g.position.z],
-            v: [Math.cos(aa) * spd * 0.55, spd * (0.75 + Math.random() * 0.3), Math.sin(aa) * spd * 0.55],
-            color: [0.45, 0.7, 1],
-            size: 0.2,
-            life: 1.3,
-            gravity: 12,
-            drag: 0.1,
-          });
+          fx.particles.spawn(g.position.x, 0.85, g.position.z, Math.cos(aa) * spd * 0.55, spd * (0.75 + Math.random() * 0.3), Math.sin(aa) * spd * 0.55, 0.45, 0.7, 1, 0.2, 1.3, 12, 0.1);
         }
         this.cur = [L.sprinklerX, 0, L.sprinklerZ];
       },
@@ -658,14 +676,7 @@ export function buildObstacles(scene, fx) {
         draw(t, broken);
         if (broken && t - this.hitAt < 2.2 && dt > 0) {
           const w = g.position;
-          fx.particles.emit({
-            p: [w.x + (Math.random() - 0.5) * 11, 18 + Math.random() * 4, w.z + 0.6],
-            v: [(Math.random() - 0.5) * 4, -3 - Math.random() * 3, 2 + Math.random() * 3],
-            color: [1, 0.9, 0.5],
-            size: 0.35,
-            life: 0.9,
-            gravity: 9,
-          });
+          fx.particles.spawn(w.x + (Math.random() - 0.5) * 11, 18 + Math.random() * 4, w.z + 0.6, (Math.random() - 0.5) * 4, -3 - Math.random() * 3, 2 + Math.random() * 3, 1, 0.9, 0.5, 0.35, 0.9, 9, 0);
         }
       },
       test(x, y, z) {

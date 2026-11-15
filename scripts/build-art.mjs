@@ -1,5 +1,6 @@
 // Keys the green-screen sheets in art-src/ into transparent atlases in art/ and writes src/artAtlas.js.
 // Items are found automatically; their order (rows top to bottom, left to right) is what src/cards.js names.
+// Each sheet is also written at half size (art/<sheet>-half.webp, same layout so the same UVs) for phones.
 //   node scripts/build-art.mjs
 import { createRequire } from 'node:module';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -43,9 +44,16 @@ for (const sheet of SHEETS) {
       if (n > 150) items.push({ x: Math.max(0, x0 * S - 2), y: Math.max(0, y0 * S - 2), w: Math.min(w, (x1 + 1) * S + 2) - Math.max(0, x0 * S - 2), h: Math.min(h, (y1 + 1) * S + 2) - Math.max(0, y0 * S - 2) });
     }
     items.sort((a, b) => a.y + a.h / 2 - (b.y + b.h / 2));
-    return { w, h, items, data: c.toDataURL('image/webp', 0.88) };
+    const hc = document.createElement('canvas');
+    hc.width = Math.round(w / 2);
+    hc.height = Math.round(h / 2);
+    const hx = hc.getContext('2d');
+    hx.imageSmoothingQuality = 'high';
+    hx.drawImage(c, 0, 0, hc.width, hc.height);
+    return { w, h, items, data: c.toDataURL('image/webp', 0.88), half: hc.toDataURL('image/webp', 0.86) };
   }, u);
   writeFileSync(`art/${sheet}.webp`, Buffer.from(r.data.split(',')[1], 'base64'));
+  writeFileSync(`art/${sheet}-half.webp`, Buffer.from(r.half.split(',')[1], 'base64'));
   atlas[sheet] = { w: r.w, h: r.h, items: r.items };
   console.log(sheet, r.w + 'x' + r.h, r.items.length, 'items', Math.round(r.data.length * 0.75 / 1024) + 'KB');
 }

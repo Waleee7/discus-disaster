@@ -602,7 +602,7 @@ export function buildStands(ctx) {
     const postG = new THREE.BoxGeometry(0.04, 0.9, 0.04);
     postG.translate(0, 0.45, 0);
     const nP = Math.floor(arc.total / 2.4);
-    const posts = new THREE.InstancedMesh(postG, railMat, nP);
+    const posts = new THREE.InstancedMesh(postG, keep(railMat.clone()), nP); // own material: sharing one with plain meshes flips the program every frame
     const m4 = new THREE.Matrix4();
     for (let i = 0; i < nP; i++) {
       ringPoint(arc.tAt((i / nP) * arc.total), O_WALL + 0.07, p0);

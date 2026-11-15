@@ -216,33 +216,45 @@ function accel(v, f, out, diag) {
 
 const _k = [new Array(3), new Array(3), new Array(3), new Array(3)];
 const _v = [0, 0, 0];
+// RK4 stage scratch (the integrator runs 240 times a second: no arrays or objects per step). Same values, same order of
+// operations as before, so every flight is bit-for-bit what it was.
+const _v0 = [0, 0, 0];
+const _kx2 = [0, 0, 0];
+const _kx3 = [0, 0, 0];
+const _kx4 = [0, 0, 0];
+const _diag = { alpha: undefined, cl: 0, cd: 0 };
+const copy3 = (a, b) => ((a[0] = b[0]), (a[1] = b[1]), (a[2] = b[2]), a);
 
 /** Advance one fixed RK4 step. Handles the ground crossing (linear interpolation of the landing point). */
 export function stepFlight(f, dt = f.p.dt) {
   if (f.landed) return f;
   const s = f.s;
-  const v0 = [s.vx, s.vy, s.vz];
-  const diag = {};
+  const v0 = _v0;
+  v0[0] = s.vx;
+  v0[1] = s.vy;
+  v0[2] = s.vz;
+  const diag = _diag;
+  diag.alpha = undefined;
   accel(v0, f, _k[0], diag);
-  // RK4 on (position, velocity); acceleration depends only on velocity
-  const kv1 = _k[0].slice();
+  // RK4 on (position, velocity); acceleration depends only on velocity. Each _k[i] is written once per step.
+  const kv1 = _k[0];
   const kx1 = v0;
   _v[0] = v0[0] + 0.5 * dt * kv1[0];
   _v[1] = v0[1] + 0.5 * dt * kv1[1];
   _v[2] = v0[2] + 0.5 * dt * kv1[2];
-  const kx2 = _v.slice();
+  const kx2 = copy3(_kx2, _v);
   accel(_v, f, _k[1]);
-  const kv2 = _k[1].slice();
+  const kv2 = _k[1];
   _v[0] = v0[0] + 0.5 * dt * kv2[0];
   _v[1] = v0[1] + 0.5 * dt * kv2[1];
   _v[2] = v0[2] + 0.5 * dt * kv2[2];
-  const kx3 = _v.slice();
+  const kx3 = copy3(_kx3, _v);
   accel(_v, f, _k[2]);
-  const kv3 = _k[2].slice();
+  const kv3 = _k[2];
   _v[0] = v0[0] + dt * kv3[0];
   _v[1] = v0[1] + dt * kv3[1];
   _v[2] = v0[2] + dt * kv3[2];
-  const kx4 = _v.slice();
+  const kx4 = copy3(_kx4, _v);
   accel(_v, f, _k[3]);
   const kv4 = _k[3];
 

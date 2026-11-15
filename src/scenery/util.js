@@ -183,6 +183,18 @@ export function patchGround(mat, { detail, detailScale = 1, macro, macroScale = 
   return mat;
 }
 
+/**
+ * three.js draws a transparent DoubleSide material in two passes (back faces, then front) and flags it needsUpdate
+ * twice a frame to do it, so every such material costs two draws plus two program re-checks per frame. Additive glows,
+ * depthWrite:false nets and flat decals do not need the back-to-front split: draw them in one pass.
+ */
+export function singlePassTransparent(root) {
+  root.traverse((o) => {
+    const ms = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of ms) if (m.transparent && m.side === THREE.DoubleSide) m.forceSinglePass = true;
+  });
+}
+
 // --- tiny geometry merger --------------------------------------------------------------------------------------
 const _v = new THREE.Vector3();
 const _n = new THREE.Vector3();
@@ -353,9 +365,21 @@ export const TIERS = {
   low: { name: 'low', tex: 0.5, crowd: 0.42, spots: 4, haze: false, netSegs: 7, trees: 0.45 },
 };
 
+/** `?q=low|mid|high` in the page URL forces a tier (testing and perf runs). */
+export function urlTier() {
+  try {
+    const q = new URLSearchParams(location.search).get('q');
+    return TIERS[q] ? q : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Pick a tier from viewport size and device hints. Phones and small windows get 'low'; weak laptops 'mid'. */
 export function pickTier(width, height, hint) {
   if (hint && TIERS[hint]) return TIERS[hint];
+  const forced = urlTier();
+  if (forced) return TIERS[forced];
   const small = Math.min(width, height) < 520;
   const nav = typeof navigator !== 'undefined' ? navigator : {};
   const weak = (nav.hardwareConcurrency || 8) <= 4 || (nav.deviceMemory || 8) <= 4;

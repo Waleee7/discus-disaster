@@ -2,8 +2,13 @@
 import * as THREE from 'three';
 import { mulberry32 } from './physics.js';
 
+const ZERO3 = [0, 0, 0];
+const ONE3 = [1, 1, 1];
+
 export class Particles {
-  constructor(scene, max = 3500) {
+  /** additive: glowing sparks / trail (default). additive:false = soft, alpha-blended puffs (dust, spray) that do not glow. */
+  constructor(scene, max = 3500, { additive = true } = {}) {
+    this.additive = additive;
     this.max = max;
     this.head = 0;
     this.pos = new Float32Array(max * 3);
@@ -26,7 +31,7 @@ export class Particles {
       uniforms: this.uniforms,
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
       vertexShader: /* glsl */ `
         attribute vec3 aColor; attribute float aSize; attribute float aAlpha;
         uniform float uScale; varying vec3 vC; varying float vA;
@@ -40,9 +45,9 @@ export class Particles {
         varying vec3 vC; varying float vA;
         void main(){
           float d = length(gl_PointCoord - 0.5);
-          float a = smoothstep(0.5, 0.05, d) * vA;
+          ${additive ? 'float a = smoothstep(0.5, 0.05, d) * vA;' : 'float a = smoothstep(0.5, 0.0, d); a = a * a * vA;'}
           if (a < 0.01) discard;
-          gl_FragColor = vec4(vC * a, a);
+          gl_FragColor = ${additive ? 'vec4(vC * a, a)' : 'vec4(vC, a)'};
         }`,
     });
     this.points = new THREE.Points(this.geo, this.mat);
@@ -56,12 +61,24 @@ export class Particles {
     this.uniforms.uScale.value = (heightPx * 0.5) / Math.tan((fovDeg * Math.PI) / 360);
   }
 
-  emit({ p, v = [0, 0, 0], color = [1, 1, 1], size = 0.3, life = 1, gravity = 0, drag = 0 }) {
+  emit({ p, v = ZERO3, color = ONE3, size = 0.3, life = 1, gravity = 0, drag = 0 }) {
+    this.spawn(p[0], p[1], p[2], v[0], v[1], v[2], color[0], color[1], color[2], size, life, gravity, drag);
+  }
+
+  /** Positional form of emit (no option object, no arrays): for emitters that run every frame. */
+  spawn(px, py, pz, vx, vy, vz, r, g, b, size = 0.3, life = 1, gravity = 0, drag = 0) {
     const i = this.head;
     this.head = (this.head + 1) % this.max;
-    this.pos.set(p, i * 3);
-    this.vel.set(v, i * 3);
-    this.col.set(color, i * 3);
+    const k = i * 3;
+    this.pos[k] = px;
+    this.pos[k + 1] = py;
+    this.pos[k + 2] = pz;
+    this.vel[k] = vx;
+    this.vel[k + 1] = vy;
+    this.vel[k + 2] = vz;
+    this.col[k] = r;
+    this.col[k + 1] = g;
+    this.col[k + 2] = b;
     this.size0[i] = size;
     this.size[i] = size;
     this.life[i] = life;
@@ -69,6 +86,7 @@ export class Particles {
     this.grav[i] = gravity;
     this.drag[i] = drag;
     this.alpha[i] = 1;
+    this.live = true;
   }
 
   /** Radial burst. */
@@ -92,8 +110,16 @@ export class Particles {
 
   update(dt) {
     const { pos, vel, life, age, grav, drag, alpha, size, size0 } = this;
+    if (!this.live && !this.dirty) {
+      this.points.visible = false; // nothing alive: no upload, no draw call
+      return;
+    }
+    let lo = this.max;
+    let hi = -1;
     for (let i = 0; i < this.max; i++) {
       if (life[i] <= 0) continue;
+      if (i < lo) lo = i;
+      if (i > hi) hi = i;
       age[i] += dt;
       if (age[i] >= life[i]) {
         life[i] = 0;
@@ -116,10 +142,23 @@ export class Particles {
       alpha[i] = (1 - f) * (1 - f);
       size[i] = size0[i] * (1 - 0.4 * f);
     }
-    this.geo.attributes.position.needsUpdate = true;
-    this.geo.attributes.aColor.needsUpdate = true;
-    this.geo.attributes.aSize.needsUpdate = true;
-    this.geo.attributes.aAlpha.needsUpdate = true;
+    // upload only the span that holds live (or just-expired) particles, not all 3500 every frame
+    const A = this.geo.attributes;
+    if (this.fullUpload) {
+      // after clear(): the GPU copy still holds the old particles, so send the whole buffer once
+      A.position.needsUpdate = A.aColor.needsUpdate = A.aSize.needsUpdate = A.aAlpha.needsUpdate = true;
+      this.fullUpload = false;
+    } else if (hi >= lo) {
+      const n = hi - lo + 1;
+      A.position.addUpdateRange(lo * 3, n * 3);
+      A.aColor.addUpdateRange(lo * 3, n * 3);
+      A.aSize.addUpdateRange(lo, n);
+      A.aAlpha.addUpdateRange(lo, n);
+      A.position.needsUpdate = A.aColor.needsUpdate = A.aSize.needsUpdate = A.aAlpha.needsUpdate = true;
+    }
+    this.points.visible = hi >= lo;
+    this.live = hi >= lo;
+    this.dirty = false;
   }
 
   clear() {
@@ -128,6 +167,10 @@ export class Particles {
       this.pos[i * 3 + 1] = -999;
       this.alpha[i] = 0;
     }
+    this.live = false;
+    this.dirty = true;
+    this.fullUpload = true;
+    this.points.visible = false;
   }
 
   dispose() {

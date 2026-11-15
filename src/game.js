@@ -16,7 +16,8 @@ import { buildStadium, toThree } from './scene.js';
 import { buildDiscus, buildThrower, buildTape, buildBlobShadow, buildRivalMarker } from './actors.js';
 import { Particles, Debris, disposeTree } from './fx.js';
 import { buildObstacles, makeLayout } from './obstacles.js';
-import { setArtWeather } from './cards.js';
+import { setArtWeather, setArtQuality } from './cards.js';
+import { pickTier, singlePassTransparent } from './scenery/util.js';
 import { Announcer, rankFor } from './announcer.js';
 import { Haptics } from './haptics.js';
 import { Input } from './input.js';
@@ -122,6 +123,23 @@ export class Game {
     this.camLook = new THREE.Vector3(-1, 1.7, -12);
     this.hdir = new THREE.Vector3(0, 0, -1);
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // one quality tier for the whole session (viewport + device hints, or ?q=low|mid|high): art, stadium and post agree
+    this.tier = pickTier(innerWidth, innerHeight);
+    setArtQuality(this.tier.name);
+    // per-frame scratch (the camera and the discus run every frame: no garbage)
+    this._tq = new THREE.Vector3();
+    this._want = new THREE.Vector3();
+    this._look = new THREE.Vector3();
+    this._pos = new THREE.Vector3();
+    this._v3 = new THREE.Vector3();
+    this._side = new THREE.Vector3();
+    this._dir = new THREE.Vector3();
+    this._right = new THREE.Vector3();
+    this._mid = new THREE.Vector3();
+    this._fwd = new THREE.Vector3();
+    this._focus = new THREE.Vector3();
+    this._n3 = new THREE.Vector3();
+    this._up = new THREE.Vector3(0, 1, 0);
     this.slowFrames = 0;
     this.skipUntil = 0;
 
@@ -257,6 +275,7 @@ export class Game {
     this.applyWeather(false);
     this.updateCarousel();
     this.updateRival();
+    singlePassTransparent(this.scene);
     this.openStart(true);
   }
 
@@ -407,7 +426,7 @@ export class Game {
   /** Build a venue on first use (cached), so switching back and forth is instant after the first time. */
   getStadium(id) {
     if (!this.stadiums[id]) {
-      const st = buildStadium(this.scene, { reducedMotion: this.reducedMotion, venue: id, renderer: this.renderer });
+      const st = buildStadium(this.scene, { reducedMotion: this.reducedMotion, venue: id, renderer: this.renderer, quality: this.tier.name });
       st.setWeather(weatherOf(this.weatherId));
       this.stadiums[id] = st;
     }
@@ -1186,8 +1205,8 @@ export class Game {
 
   setDiscusPose(s, n, spinDt = 0) {
     toThree(s.x, s.y, s.z, this.discus.group.position);
-    const n3 = new THREE.Vector3(n[2], n[1], -n[0]);
-    this.discus.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n3);
+    const n3 = this._n3.set(n[2], n[1], -n[0]);
+    this.discus.group.quaternion.setFromUnitVectors(this._up, n3);
     this.discus.body.rotation.y += spinDt * 18;
     this.shadow.position.set(this.discus.group.position.x, 0.05, this.discus.group.position.z);
     const sc = 1.4 + s.y * 0.04;
@@ -1256,9 +1275,9 @@ export class Game {
   }
 
   emitTrail(s) {
-    const q = toThree(s.x, s.y, s.z);
-    this.particles.emit({ p: [q.x, q.y, q.z], v: [0, 0, 0], color: [1, 0.55, 0.15], size: 0.55, life: 0.9, drag: 0 });
-    this.particles.emit({ p: [q.x, q.y, q.z], v: [(Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.8], color: [1, 0.95, 0.8], size: 0.22, life: 0.45 });
+    const q = toThree(s.x, s.y, s.z, this._tq);
+    this.particles.spawn(q.x, q.y, q.z, 0, 0, 0, 1, 0.55, 0.15, 0.55, 0.9, 0, 0);
+    this.particles.spawn(q.x, q.y, q.z, (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.8, 1, 0.95, 0.8, 0.22, 0.45, 0, 0);
   }
 
   checkHits(c) {
@@ -1904,8 +1923,8 @@ export class Game {
 
   updateCamera(dt) {
     const cam = this.camera;
-    const want = new THREE.Vector3();
-    const look = new THREE.Vector3();
+    const want = this._want.set(0, 0, 0);
+    const look = this._look.set(0, 0, 0);
     let k = 3.2;
     let fov = this.baseFov;
     let roll = 0;
@@ -1916,13 +1935,13 @@ export class Game {
     const landed = (st === 'flight' && this.cur && this.cur.stage === 'landed') || (st === 'replay' && this.rt && this.rt.stage === 'landed');
     if (flying) {
       const s = st === 'replay' ? this.replayS : this.cur.f.s;
-      const pos = toThree(s.x, s.y, s.z);
-      const v3 = new THREE.Vector3(s.vz, 0, -s.vx);
+      const pos = toThree(s.x, s.y, s.z, this._pos);
+      const v3 = this._v3.set(s.vz, 0, -s.vx);
       if (v3.lengthSq() > 1e-4) {
         v3.normalize();
         this.hdir.lerp(v3, 1 - Math.exp(-6 * dt)).normalize();
       }
-      const side = new THREE.Vector3(-this.hdir.z, 0, this.hdir.x); // right of travel
+      const side = this._side.set(-this.hdir.z, 0, this.hdir.x); // right of travel
       const nearGround = s.vy < 0 && s.y < 10 && s.y / Math.max(2, -s.vy) < 1.1;
       if (preset !== 'broadcast') {
         ({ k, fov } = this.presetShot(preset, pos, s, want, look, fov));
@@ -1942,9 +1961,9 @@ export class Game {
       const rr = rec && rec.result;
       if (rr) {
         const L = Math.max(8, rr.range);
-        const dir = new THREE.Vector3(Math.sin(rr.az * DEG), 0, -Math.cos(rr.az * DEG));
-        const right = new THREE.Vector3(-dir.z, 0, dir.x);
-        const mid = dir.clone().multiplyScalar(L * 0.5);
+        const dir = this._dir.set(Math.sin(rr.az * DEG), 0, -Math.cos(rr.az * DEG));
+        const right = this._right.set(-dir.z, 0, dir.x);
+        const mid = this._mid.copy(dir).multiplyScalar(L * 0.5);
         if (cam.aspect < 0.9) {
           // portrait: the result sheet owns the bottom ~30% of the screen, so shoot down the tape from behind the
           // circle. The landing mark sits in the upper-middle band, the tape runs up the screen to it.
@@ -1955,12 +1974,12 @@ export class Game {
           look.copy(mid).addScaledVector(dir, L * 0.2).setY(0);
           // the result card owns the right edge: slide the picture left so the landing mark stays in the free area
           const f = clamp((this.dom.result.offsetWidth || 340) / Math.max(1, innerWidth), 0.15, 0.5);
-          const fwd = look.clone().sub(want).setY(0);
+          const fwd = this._fwd.copy(look).sub(want).setY(0);
           const dist = fwd.length();
           if (dist > 1e-3) {
             fwd.divideScalar(dist);
             const half = dist * Math.tan((this.baseFov * DEG) / 2) * cam.aspect;
-            look.addScaledVector(new THREE.Vector3(-fwd.z, 0, fwd.x), half * f * 1.15);
+            look.addScaledVector(this._v3.set(-fwd.z, 0, fwd.x), half * f * 1.15);
           }
         }
         k = 2.4;
@@ -2009,7 +2028,7 @@ export class Game {
         k = st === 'spin' ? Math.max(k, 4) : k;
       }
       if (st === 'spin' && this.spin) roll = (this.spin.dizzy || 0) * 0.12 * Math.sin(this.spin.t * 7);
-      focus = new THREE.Vector3(0, 1.2, 0);
+      focus = this._focus.set(0, 1.2, 0);
     }
     // never let a net fill the view: nudge a non-broadcast shot around the athlete / circle until the sight line is clear
     if (focus && (preset !== 'broadcast' || !flying) && [want.x, want.y, want.z].every(Number.isFinite)) {

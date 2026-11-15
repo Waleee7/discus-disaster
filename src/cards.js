@@ -44,14 +44,22 @@ export const CARDS = {
   sausage: item('hotdog-a', 2),
 };
 
+const NO_OPT = {};
 const loader = new THREE.TextureLoader();
 const textures = {};
 const pending = {};
+// Phones (the low tier) load half-size copies of the sheets: same layout, so the same UVs, at a quarter of the memory.
+// A 2752x1536 sheet is ~21 MB of GPU memory with mips; the half copy is ~5 MB, and a card is never that big on a phone.
+let half = false;
+export function setArtQuality(tier) {
+  half = tier === 'low';
+}
+export const artUrl = (sheet) => `art/${sheet}${half ? '-half' : ''}.webp`;
 function sheetTexture(sheet) {
   if (!pending[sheet]) {
     pending[sheet] = new Promise((res) => {
       loader.load(
-        `art/${sheet}.webp`,
+        artUrl(sheet),
         (t) => {
           t.colorSpace = THREE.SRGBColorSpace;
           t.anisotropy = 4;
@@ -66,8 +74,10 @@ function sheetTexture(sheet) {
   return pending[sheet];
 }
 
-/** Resolves true once every sheet has loaded. */
-export const artReady = () => Promise.all(Object.keys(ART_ATLAS).map(sheetTexture)).then((all) => all.every(Boolean));
+/** The sheets the game actually draws (a sheet nobody references is never downloaded or decoded). */
+export const usedSheets = () => [...new Set(Object.values(CARDS).map((c) => c.sheet))];
+/** Resolves true once every sheet in use has loaded. */
+export const artReady = () => Promise.all(usedSheets().map(sheetTexture)).then((all) => all.every(Boolean));
 
 // Shared by every batch, so the weather can grade all the art at once.
 const TINT = { value: new THREE.Color(1, 1, 1) };
@@ -78,11 +88,11 @@ export function setArtWeather(id) {
 }
 
 const VERT = `
-attribute vec3 aCenter; attribute vec2 aOff; attribute float aRot; attribute float aAlpha;
-uniform float uFull; varying vec2 vUv; varying float vA;
+attribute vec3 aCenter; attribute vec2 aOff; attribute float aRot; attribute float aAlpha; attribute float aShade;
+uniform float uFull; varying vec2 vUv; varying float vA; varying float vS;
 #include <fog_pars_vertex>
 void main() {
-  vUv = uv; vA = aAlpha;
+  vUv = uv; vA = aAlpha; vS = aShade;
   float c = cos(aRot), s = sin(aRot);
   vec2 o = vec2(aOff.x * c - aOff.y * s, aOff.x * s + aOff.y * c);
   vec3 R, U;
@@ -99,14 +109,14 @@ void main() {
   #include <fog_vertex>
 }`;
 const FRAG = `
-uniform sampler2D map; uniform vec3 uTint; varying vec2 vUv; varying float vA;
+uniform sampler2D map; uniform vec3 uTint; varying vec2 vUv; varying float vA; varying float vS;
 #include <common>
 #include <fog_pars_fragment>
 void main() {
   vec4 c = texture2D(map, vUv);
   float a = c.a * vA;
   if (a < 0.3) discard;
-  gl_FragColor = vec4(c.rgb * uTint, a);
+  gl_FragColor = vec4(c.rgb * uTint * vS, a);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
   #include <fog_fragment>
@@ -129,6 +139,7 @@ export class CardBatch {
     this.uv = attr('uv', 2);
     this.rot = attr('aRot', 1);
     this.alpha = attr('aAlpha', 1);
+    this.shade = attr('aShade', 1);
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(capacity * 12), 3)); // unused: three expects it
     const idx = [];
     for (let i = 0; i < capacity; i++) {
@@ -160,35 +171,59 @@ export class CardBatch {
   }
 
   /** Place card i. Height in metres (or span: the longer side). anchor 0 = stands on y, 0.5 = centred on y. */
-  set(i, name, x, y, z, { h, span, anchor = 0, flip = false, rot = 0, alpha = 1, squash = 1 } = {}) {
+  /** Allocation-free: birds and carts are re-placed every frame. `widen` scales the width only (foreshortening). */
+  set(i, name, x, y, z, o = NO_OPT) {
     const f = CARDS[name];
     const A = ART_ATLAS[this.sheet];
+    const h = o.h;
+    const span = o.span;
+    const anchor = o.anchor || 0;
+    const rot = o.rot || 0;
+    const alpha = o.alpha ?? 1;
+    const shade = o.shade ?? 1;
+    const squash = o.squash ?? 1;
     const aspect = f.w / f.h;
     const H = (span ? span / Math.max(aspect, 1) : h) * squash;
-    const W = (span ? (span / Math.max(aspect, 1)) * aspect : h * aspect) / 2;
+    const W = ((span ? (span / Math.max(aspect, 1)) * aspect : h * aspect) / 2) * (o.widen ?? 1);
     const u0 = f.x / A.w;
     const u1 = (f.x + f.w) / A.w;
     const v1 = 1 - f.y / A.h;
     const v0 = 1 - (f.y + f.h) / A.h;
-    const [ul, ur] = flip ? [u1, u0] : [u0, u1];
+    const ul = o.flip ? u1 : u0;
+    const ur = o.flip ? u0 : u1;
     const yb = -anchor * H;
     const yt = (1 - anchor) * H;
     const b = i * 4;
-    this.off.set([-W, yb, W, yb, W, yt, -W, yt], b * 2);
-    this.uv.set([ul, v0, ur, v0, ur, v1, ul, v1], b * 2);
-    this.center.set([x, y, z, x, y, z, x, y, z, x, y, z], b * 3);
-    this.rot.set([rot, rot, rot, rot], b);
-    this.alpha.set([alpha, alpha, alpha, alpha], b);
+    const off = this.off.array;
+    const uv = this.uv.array;
+    const c = this.center.array;
+    let k = b * 2;
+    off[k] = -W; off[k + 1] = yb; off[k + 2] = W; off[k + 3] = yb; off[k + 4] = W; off[k + 5] = yt; off[k + 6] = -W; off[k + 7] = yt;
+    uv[k] = ul; uv[k + 1] = v0; uv[k + 2] = ur; uv[k + 3] = v0; uv[k + 4] = ur; uv[k + 5] = v1; uv[k + 6] = ul; uv[k + 7] = v1;
+    k = b * 3;
+    for (let j = 0; j < 4; j++, k += 3) {
+      c[k] = x;
+      c[k + 1] = y;
+      c[k + 2] = z;
+    }
+    const r = this.rot.array;
+    const a = this.alpha.array;
+    const sh = this.shade.array;
+    for (let j = b; j < b + 4; j++) {
+      r[j] = rot;
+      a[j] = alpha;
+      sh[j] = shade;
+    }
     this.touch();
   }
 
   hide(i) {
-    this.off.set([0, 0, 0, 0, 0, 0, 0, 0], i * 8);
+    this.off.array.fill(0, i * 8, i * 8 + 8);
     this.touch();
   }
 
   touch() {
-    this.center.needsUpdate = this.off.needsUpdate = this.uv.needsUpdate = this.rot.needsUpdate = this.alpha.needsUpdate = true;
+    this.center.needsUpdate = this.off.needsUpdate = this.uv.needsUpdate = this.rot.needsUpdate = this.alpha.needsUpdate = this.shade.needsUpdate = true;
   }
 
   dispose() {
