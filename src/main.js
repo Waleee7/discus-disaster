@@ -17,6 +17,14 @@ await fontsReady();
 const canvas = document.getElementById('gl');
 const game = new Game(canvas);
 game.start();
+// once the art is in, compile the stadium screen's programs (the first replay on the board must not hitch)
+artReady().then(() => {
+  try {
+    game.warmFeed();
+  } catch {
+    /* the board falls back to its own cards */
+  }
+});
 
 // Test / capture hooks. Everything goes through the same code paths a human uses.
 window.__debug = {
@@ -42,6 +50,11 @@ window.__debug = {
   makeLayout,
   artReady,
   skipIntro: () => game.closeStart(true),
+  /** The walk-out in progress (null when none): { t, total, shots }. */
+  get walk() {
+    return game.walk;
+  },
+  skipWalk: () => game.endWalkout(true),
   setMode: (id) => game.setMode(id),
   setPersona: (id) => game.setPersona(id),
   setTechnique: (id) => game.setTechnique(id),

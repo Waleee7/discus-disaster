@@ -542,7 +542,7 @@ export function buildBowl(ctx) {
     setHaze() {},
     setLevel(k) {
       spots.forEach((s, i) => (s.intensity = spotBase[i] * k));
-      root.userData.lampMat.color.setHex(0xfff1d6).multiplyScalar(0.3 + 0.7 * k);
+      root.userData.lampMat.color.setHex(0xfff1d6).multiplyScalar((0.3 + 0.7 * k) * 5 * Math.min(1, k * 1.4 + 0.02));
     },
   };
 

@@ -7,8 +7,9 @@ const ONE3 = [1, 1, 1];
 
 export class Particles {
   /** additive: glowing sparks / trail (default). additive:false = soft, alpha-blended puffs (dust, spray) that do not glow. */
-  constructor(scene, max = 3500, { additive = true } = {}) {
+  constructor(scene, max = 3500, { additive = true, grow = -0.4 } = {}) {
     this.additive = additive;
+    this.grow = grow; // size over life: sparks shrink (-0.4), dust billows (+1.7)
     this.max = max;
     this.head = 0;
     this.pos = new Float32Array(max * 3);
@@ -48,6 +49,7 @@ export class Particles {
           ${additive ? 'float a = smoothstep(0.5, 0.05, d) * vA;' : 'float a = smoothstep(0.5, 0.0, d); a = a * a * vA;'}
           if (a < 0.01) discard;
           gl_FragColor = ${additive ? 'vec4(vC * a, a)' : 'vec4(vC, a)'};
+          ${additive ? '' : '#include <tonemapping_fragment>\n          #include <colorspace_fragment>'}
         }`,
     });
     this.points = new THREE.Points(this.geo, this.mat);
@@ -140,7 +142,7 @@ export class Particles {
       }
       const f = age[i] / life[i];
       alpha[i] = (1 - f) * (1 - f);
-      size[i] = size0[i] * (1 - 0.4 * f);
+      size[i] = size0[i] * (1 + this.grow * f);
     }
     // upload only the span that holds live (or just-expired) particles, not all 3500 every frame
     const A = this.geo.attributes;
@@ -191,6 +193,7 @@ export class Debris {
       bun: new THREE.CapsuleGeometry(0.1, 0.32, 3, 6),
       shard: new THREE.TetrahedronGeometry(0.25),
       feather: new THREE.PlaneGeometry(0.14, 0.4),
+      clod: new THREE.DodecahedronGeometry(0.05, 0),
     };
     for (let i = 0; i < n; i++) {
       const m = new THREE.Mesh(this.geos.dog, new THREE.MeshStandardMaterial({ roughness: 0.7, side: THREE.DoubleSide }));
@@ -216,7 +219,7 @@ export class Debris {
       it.w.set((r() - 0.5) * 14, (r() - 0.5) * 14, (r() - 0.5) * 14);
       it.life = it.age = 0;
       it.life = 3.5 + r() * 1.5;
-      it.floor = kind === 'feather' ? 0.02 : 0.1;
+      it.floor = kind === 'feather' ? 0.02 : kind === 'clod' ? 0.03 : 0.1;
       it.drag = kind === 'feather' ? 3 : 0.2;
       it.g = kind === 'feather' ? 1.6 : 9.8;
       it.m.visible = true;

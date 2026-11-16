@@ -13,8 +13,12 @@ import {
   mulberry32,
 } from './physics.js';
 import { buildStadium, toThree } from './scene.js';
-import { buildDiscus, buildThrower, buildTape, buildBlobShadow, buildRivalMarker } from './actors.js';
+import { buildDiscus, buildThrower, buildTape, buildBlobShadow, buildRivalMarker, buildDivot } from './actors.js';
 import { Particles, Debris, disposeTree } from './fx.js';
+import { Post } from './post.js';
+import { buildEnv } from './scenery/env.js';
+import { Walkout, ReplayDirector, feedShot, feedSpeed, replayShots } from './cinema.js';
+import { StadiumScreen } from './screen.js';
 import { buildObstacles, makeLayout } from './obstacles.js';
 import { setArtWeather, setArtQuality } from './cards.js';
 import { pickTier, singlePassTransparent } from './scenery/util.js';
@@ -44,6 +48,7 @@ const SLOW_SCALE = 0.3;
 const SKIP_GRACE = 0.35; // a press this soon after release is the release itself (key bounce), not a skip
 const HEAD_FACTOR = HEAD_FACTOR_PRO; // pro: dial angle -> throw heading (window edge == sector edge)
 const OVERLAYS = ['start', 'help', 'board', 'initials', 'tech']; // states that are a modal screen over the stadium
+const FEED_STATES = ['result', 'final', 'initials', 'board', 'help', 'ready', 'tech']; // the jumbotron keeps replaying the last throw
 const UNDER = ['help', 'board', 'initials']; // overlays that sit on top of whatever state was current
 const DEMO_LOOP = 4.8; // technique demo loop (seconds)
 const MULT_CAP = 9;
@@ -144,18 +149,30 @@ export class Game {
     this.skipUntil = 0;
 
     // renderer / scene / camera
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    // the post path resolves its own multisampled HDR target, so the canvas only needs MSAA on the direct (phone) path
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: this.tier.name === 'low', powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(this.dpr);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.post = new Post(this.renderer, this.tier.name);
+    this.post.set({ exposure: 1.12 });
+    this.post.cur.exposure = 1.12;
+    this.env = buildEnv(this.renderer);
+    this.frameDt = 1 / 60;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 800);
     this.baseFov = 55;
 
     this.stadium = this.getStadium(this.venueId);
     this.particles = new Particles(this.scene);
+    // landing dust: soft alpha-blended puffs (dust does not glow, so not the additive spark system)
+    this.dust = new Particles(this.scene, 420, { additive: false, grow: 1.7 });
     this.debris = new Debris(this.scene);
+    this.divot = buildDivot();
+    this.scene.add(this.divot);
+    this.walkShadow = buildBlobShadow();
+    this.walkShadow.scale.set(1.3, 1.3, 1);
+    this.walkShadow.visible = false;
+    this.scene.add(this.walkShadow);
     this.obstacles = buildObstacles(this.scene, { particles: this.particles, debris: this.debris });
     this.obstacles.setCamera(this.camera);
     this.thrower = buildThrower(personaOf(this.personaId));
@@ -175,6 +192,17 @@ export class Game {
     this.scene.add(this.shadow);
     this.tape = buildTape();
     this.scene.add(this.tape.group);
+    // replays: one director drives the full-screen replay, a second one the jumbotron feed (they can overlap in time)
+    this.replayDir = new ReplayDirector(this);
+    this.feedDir = new ReplayDirector(this);
+    this.feed = null;
+    this.walk = null;
+    this.walkAth = {};
+    this.screen = new StadiumScreen(this.renderer, this.tier.name, { hdr: this.post.full });
+    this.screen.attach(this.obstacles.jumbo.screenMat);
+    this.feedCam = { pos: new THREE.Vector3(), look: new THREE.Vector3(), fov: 30 };
+    this.shotCam = { pos: new THREE.Vector3(), look: new THREE.Vector3(), fov: 40, focus: 5, range: 3, dof: 0 };
+    this.heroEnv();
 
     // DOM
     this.dom = {
@@ -240,6 +268,14 @@ export class Game {
       powerState: $('powerState'),
       zoneSweet: $('zoneSweet'),
       zoneOver: $('zoneOver'),
+      walk: $('walk'),
+      nameCard: $('nameCard'),
+      ncName: $('ncName'),
+      ncRole: $('ncRole'),
+      ncNum: $('ncNum'),
+      ncMeta: $('ncMeta'),
+      ncVenue: $('ncVenue'),
+      cineStatus: $('cineStatus'),
     };
     $('dialSector').setAttribute('d', 'M0 -54 L0 -40');
     this.setDial();
@@ -335,6 +371,7 @@ export class Game {
     const h = innerHeight;
     this.renderer.setPixelRatio(this.dpr);
     this.renderer.setSize(w, h, false);
+    this.post.setSize(w, h, this.dpr);
     this.camera.aspect = w / h;
     this.baseFov = w / h < 0.9 ? 72 : w / h < 1.3 ? 62 : 54;
     this.camera.fov = this.baseFov;
@@ -426,7 +463,8 @@ export class Game {
   /** Build a venue on first use (cached), so switching back and forth is instant after the first time. */
   getStadium(id) {
     if (!this.stadiums[id]) {
-      const st = buildStadium(this.scene, { reducedMotion: this.reducedMotion, venue: id, renderer: this.renderer, quality: this.tier.name });
+      // image-based light everywhere on desktop; on phones only the hero materials get it (see heroEnv)
+      const st = buildStadium(this.scene, { reducedMotion: this.reducedMotion, venue: id, renderer: this.renderer, quality: this.tier.name, env: this.tier.name === 'low' ? null : this.env, hdr: this.post.full });
       st.setWeather(weatherOf(this.weatherId));
       this.stadiums[id] = st;
     }
@@ -695,6 +733,7 @@ export class Game {
     this.thrower.setStyle(this.tech.pose);
     this.scene.add(this.thrower.group);
     this.markCasters();
+    this.heroEnv();
     if (inHand) {
       this.thrower.hand.add(this.discus.group);
       this.discus.group.position.set(0, 0, 0);
@@ -749,6 +788,9 @@ export class Game {
         break;
       case 'flight':
         this.skipToResult();
+        break;
+      case 'walkout':
+        this.endWalkout(true);
         break;
       case 'replay':
         this.endReplay();
@@ -844,7 +886,8 @@ export class Game {
         this.swapAthlete();
         break;
       case 'next':
-        if (this.state === 'result' || this.state === 'final') this.next();
+        if (this.state === 'walkout') this.endWalkout(true);
+        else if (this.state === 'result' || this.state === 'final') this.next();
         else if (this.state === 'start') this.closeStart();
         break;
       case 'menu':
@@ -856,7 +899,8 @@ export class Game {
         else if (['start', 'ready', 'result', 'final'].includes(this.state)) this.openHelp();
         break;
       case 'close':
-        if (this.state === 'help') this.closeHelp();
+        if (this.state === 'walkout') this.endWalkout(true);
+        else if (this.state === 'help') this.closeHelp();
         else if (this.state === 'board') this.closeBoard();
         else if (this.state === 'initials') this.skipInitials();
         else if (this.state === 'replay') this.endReplay();
@@ -971,7 +1015,7 @@ export class Game {
   next() {
     if (this.state === 'final') {
       this.daily = false; // "PLAY AGAIN" is a normal run; the Daily is opened from the BOARD
-      this.newRun();
+      this.newRun(false, { short: true });
       return;
     } else if (this.attempt < 2) {
       this.attempt++;
@@ -982,8 +1026,8 @@ export class Game {
     this.startAttempt();
   }
 
-  /** A fresh 3-throw run (normal or Daily) with the current mode and athlete. */
-  newRun(silent = false) {
+  /** A fresh 3-throw run (normal or Daily) with the current mode and athlete. Opens with the walk-out (short = crane-in only). */
+  newRun(silent = false, { short = false } = {}) {
     this.pending = null;
     this.attempt = 0;
     this.attempts = [];
@@ -999,7 +1043,9 @@ export class Game {
     this.updateHudStatic();
     this.applyModeUi();
     this.updateRival();
-    this.startAttempt(undefined, silent);
+    this.startAttempt(undefined, true);
+    if (silent) return;
+    this.startWalkout(short);
   }
 
   startAttempt(seed, silent = false) {
@@ -1016,7 +1062,12 @@ export class Game {
     this.setState('ready');
     this.timeScale = 1;
     this.flashNow(null);
+    if (this.attempt === 0) this.stopFeed(); // a new run starts on the board's own cards
     if (silent) return;
+    this.announceAttempt();
+  }
+
+  announceAttempt() {
     if (this.attempt === 0) {
       const p = personaOf(this.personaId);
       const q = p.quips[(this.seedBase + (this.attempt || 0)) % p.quips.length];
@@ -1033,6 +1084,8 @@ export class Game {
   cancelFx() {
     this.setDetails(false);
     this.particles.clear();
+    this.dust.clear();
+    this.divot.visible = false;
     this.debris.clear();
     this.dom.result.hidden = true;
     this.dom.replayTag.hidden = true;
@@ -1058,6 +1111,8 @@ export class Game {
   startSpin() {
     this.setState('spin');
     this.spin = { rot: 0, t: 0, tickN: 0, psi: 180, psiVis: 180, power: 0, dizzy: 0, announced: new Set(), prof: chargeProfile(this.mode, this.tech) };
+    this.track = []; // the athlete's recorded turns [t, rot, power, psi, ...]: the replays re-pose the real spin
+    this.stopFeed(); // the board goes back to its cards when the next throw starts
     this.dom.hint.classList.add('off');
     this.flashNow(null);
     this.announcer.say('spin', {}, { priority: 1, ms: 2200 });
@@ -1104,6 +1159,7 @@ export class Game {
     }
     this.thrower.setFacing(s.psiVis);
     this.thrower.spin(s.rot, s.power);
+    if (this.track) this.track.push(s.t, s.rot, s.power, s.psiVis);
     this.shake = Math.max(this.shake, s.power * 0.035 + over * 0.06);
     if (turns >= STEPOUT_TURNS) this.stepOut();
   }
@@ -1150,6 +1206,7 @@ export class Game {
       this.announcer.say('badRelease', {}, { priority: 3, ms: 3000 });
     }
     this.announcer.clear();
+    this.stopFeed();
     // the air of this venue / weather: density from the temperature, plus the gust profile (both deterministic)
     if (this.layout.rho !== undefined && p.rho === undefined) p = { ...p, rho: this.layout.rho };
     if (this.layout.gust && p.gust === undefined) p = { ...p, gust: this.layout.gust };
@@ -1168,6 +1225,8 @@ export class Game {
     };
     meta = { technique: this.techId, ...meta };
     rec.meta = meta;
+    rec.pose = { spin: this.track || [], style: this.tech.pose || null };
+    this.track = null;
     this.cur = { f, rec, acc: 0, steps: 0, landedT: 0, stage: 'air', rng: mulberry32(this.layout.seed + 1) };
     this.pushSample(f, rec);
     this.spin = null;
@@ -1337,9 +1396,11 @@ export class Game {
     this.discus.group.rotation.x = 0;
     this.glow.visible = false;
     this.shadow.visible = false;
-    this.particles.burst([q.x, 0.2, q.z], { count: 40, speed: 5, color: [0.55, 0.45, 0.35], size: 0.6, life: 1.1, gravity: 6, up: 3 });
+    this.landFx(q, s.vx, s.vz);
     this.shake = Math.max(this.shake, this.reducedMotion ? 0 : 0.28);
     this.haptics[foul ? 'foul' : 'land']();
+    // the stadium screen replays it: slow motion, a different angle, a REPLAY bug
+    this.startFeed(rec);
     if (foul) {
       this.flashNow('FOUL', { cage: 'THE CAGE WINS', stepout: 'LEFT THE CIRCLE', left: 'LEFT OF THE SECTOR', right: 'RIGHT OF THE SECTOR' }[reason] || '', 'foul');
       const key = { cage: 'cage', stepout: 'stepout', left: 'foulLeft', right: 'foulRight' }[reason];
@@ -1660,6 +1721,11 @@ export class Game {
   }
 
   // ------------------------------------------------------------------ replay
+  /**
+   * Full-screen cinematic replay of a recorded throw (REPLAY button: the best one). Four shots over the real recording:
+   * the last turns from a low angle inside the cage, the release over the shoulder, the flight on a long lens from the
+   * sideline, the landing at grass level with the dust. Letterboxed, depth of field, slow motion where it matters.
+   */
   startReplay(rec) {
     if (!rec || !rec.samples.length) return;
     this.prevState = this.state;
@@ -1667,78 +1733,73 @@ export class Game {
     this.flashNow(null);
     this.dom.result.hidden = true;
     this.dom.replayTag.hidden = false;
-    this.dom.replayInfo.textContent = `BEST THROW • ${fmt(rec.result.distance)} m`;
+    this.dom.replayInfo.textContent = `BEST THROW \u2022 ${fmt(rec.result.distance)} m`;
     this.particles.clear();
+    this.dust.clear();
     this.debris.clear();
+    this.divot.visible = false;
     this.tape.hide();
     this.stadium.setJudgeCall(null);
+    this.stopFeed();
     this.obstacles.setLayout(rec.layout);
     this.stadium.setWind(rec.layout.wind, rec.layout.gust);
-    const first = rec.samples[0];
-    this.rt = { rec, t: 0, ev: 0, stage: 'air', landedT: 0 };
-    this.discus.group.removeFromParent();
-    this.scene.add(this.discus.group);
+    const dir = this.replayDir.load(rec, { preroll: 1.25 });
+    const shots = replayShots(dir);
+    const ft = dir.flightT;
+    const total = shots.reduce((sum, sh) => sum + (sh.after && sh.b > ft ? Math.max(0, ft - sh.a) / sh.speed + (sh.b - Math.max(ft, sh.a)) / sh.after : (sh.b - sh.a) / sh.speed), 0);
+    this.rt = { rec, shots, i: 0, tau: shots[0].a, t: 0, total, landed: false, cut: true };
     this.glow.visible = true;
-    this.shadow.visible = true;
-    this.thrower.setFacing(Number.isFinite(rec.meta.psi) ? rec.meta.psi : rec.params.heading / HEAD_FACTOR);
-    this.thrower.release(0);
-    this.tO = rec.tRel;
-    this.setDiscusPose({ x: first[1], y: first[2], z: first[3] }, rec.n);
     this.setState('replay');
+    document.body.classList.add('cine');
     this.timeScale = 1;
+    dir.pose(this.rt.tau, { live: true });
   }
 
   updateReplay(dt) {
     const r = this.rt;
-    const rec = r.rec;
-    if (r.stage === 'air') {
-      r.t += dt;
-      const S = rec.samples;
-      const last = S[S.length - 1];
-      const t = Math.min(r.t, last[0]);
-      const idx = Math.min(S.length - 2, Math.floor(t * (240 / REC_EVERY)));
-      const a = S[idx];
-      const b = S[idx + 1];
-      const k = b[0] > a[0] ? clamp((t - a[0]) / (b[0] - a[0]), 0, 1) : 0;
-      const lerp = (i) => a[i] + (b[i] - a[i]) * k;
-      const s = { x: lerp(1), y: lerp(2), z: lerp(3), vx: lerp(4), vy: lerp(5), vz: lerp(6) };
-      this.tO = rec.tRel + t;
-      this.obstacles.update(this.tO, dt);
-      while (r.ev < rec.events.length && rec.events[r.ev].t <= t) {
-        const ev = rec.events[r.ev++];
-        const o = this.obstacles.list.find((x) => x.key === ev.key);
-        if (o) {
-          o.hitAt = null;
-          o.onHit(rec.tRel + ev.t, ev.p[0], ev.p[1], ev.p[2]);
-          this.flashNow(o.meta.label, `x${o.meta.mult}`, 'good');
-        }
+    const dir = this.replayDir;
+    const ft = dir.flightT;
+    let sh = r.shots[r.i];
+    const speed = sh.after && r.tau >= ft ? sh.after : sh.speed;
+    r.tau += dt * speed;
+    r.t += dt;
+    if (r.tau >= sh.b) {
+      r.i++;
+      if (r.i >= r.shots.length) {
+        this.endReplay();
+        return;
       }
-      this.setDiscusPose(s, rec.n, dt);
+      sh = r.shots[r.i];
+      r.tau = Math.max(r.tau, sh.a);
+      r.cut = true;
+    }
+    dir.pose(r.tau, { live: true });
+    if (r.tau >= 0 && r.tau < ft) {
+      const s = dir.discAt(r.tau, null);
       this.emitTrail(s);
       this.replayS = s;
-      this.thrower.release(t / 0.8);
-      if (r.t >= last[0]) {
-        r.stage = 'landed';
-        const q = toThree(s.x, 0.06, s.z);
-        this.discus.group.position.copy(q);
-        this.glow.visible = false;
-        this.shadow.visible = false;
-        this.particles.burst([q.x, 0.2, q.z], { count: 30, speed: 5, color: [0.55, 0.45, 0.35], size: 0.6, life: 1, gravity: 6, up: 3 });
-      }
-    } else {
-      r.landedT += dt;
-      this.tO += dt;
-      this.obstacles.update(this.tO, dt);
-      const rr = rec.result;
-      this.tape.set(rr.range, rr.az, smooth(r.landedT / 1.4), rr.foul);
-      if (r.landedT > 3.4) this.endReplay();
+    } else this.replayS = null;
+    if (!r.landed && r.tau >= ft) {
+      r.landed = true;
+      const s = dir.discAt(ft, null);
+      this.landFx(toThree(s.x, 0.06, s.z, this._tq), s.vx, s.vz);
+      this.haptics.land();
+    }
+    if (r.landed) {
+      const rr = r.rec.result;
+      this.tape.set(rr.range, rr.az, smooth((r.tau - ft - 0.35) / 1.1), rr.foul);
     }
   }
 
   endReplay() {
     if (this.state !== 'replay') return;
     this.rt = null;
+    this.replayS = null;
     this.dom.replayTag.hidden = true;
+    document.body.classList.remove('cine');
+    this.post.set({ dof: 0 });
+    this.thrower.setStyle(this.tech.pose);
+    this.camSnap = 2;
     this.cancelFx();
     this.applyLayout(this.cur && this.cur.rec ? this.cur.rec.layout : this.layout);
     const back = this.prevState === 'start' ? 'ready' : this.prevState;
@@ -1763,6 +1824,200 @@ export class Game {
         else this.showResult(c.rec), (this.dom.resDist.textContent = rr.foul ? 'FOUL' : fmt(rr.distance)), (this.dom.resFeet.textContent = rr.foul ? this.dom.resFeet.textContent : formatFeetInches(rr.distance));
       }
     }
+  }
+
+  // ------------------------------------------------------------------ walk-out
+  /** PLAY: the athlete walks out of the players' tunnel under the floods (short = the crane into the circle only). */
+  startWalkout(short = false) {
+    const p = personaOf(this.personaId);
+    this.walk = new Walkout({ short, reduced: this.reducedMotion, aspect: this.camera.aspect });
+    this.walk.t = 0;
+    this.walkAth = {};
+    this.setState('walkout');
+    document.body.classList.add('cine');
+    this.dom.walk.hidden = false;
+    this.dom.nameCard.classList.remove('on');
+    this.dom.nameCard.style.setProperty('--char', p.css);
+    this.dom.ncName.textContent = p.name;
+    this.dom.ncRole.textContent = p.role.toUpperCase();
+    this.dom.ncNum.textContent = String(p.number);
+    this.dom.ncMeta.textContent = `${this.daily ? 'DAILY THROW' : this.mode.label.toUpperCase()} \u00b7 BEAT ${this.rivalInfo.name} ${this.rivalInfo.mark.toFixed(1)} M`;
+    const wx = weatherOf(this.weatherId);
+    this.dom.ncVenue.textContent = `${venueOf(this.venueId).short} \u00b7 ${wx.short} ${Math.round(this.layout.temp ?? wx.temp)}\u00b0C`;
+    this.dom.cineStatus.textContent = `${p.name} walks out. Tap or press any key to skip.`;
+    this.announcer.clear();
+    this.camSnap = 2;
+    this.walkShadow.visible = true;
+    this.screen.setMode('live', p.name);
+    this.updateWalkout(0);
+  }
+
+  updateWalkout(dt) {
+    const w = this.walk;
+    w.t += dt;
+    if (w.t >= w.total) {
+      this.endWalkout(false);
+      return;
+    }
+    const a = w.athlete(w.t, this.walkAth);
+    const th = this.thrower;
+    th.group.position.set(a.x, 0, a.z);
+    th.setFacing(a.psi);
+    if (a.mode === 'walk' || a.mode === 'turn') th.walk(a.phase, a.k, true);
+    else {
+      th.idle(this.clock);
+      if (a.settle < 0.7) th.shake(this.clock, Math.sin(Math.PI * (a.settle / 0.7)));
+    }
+    this.walkShadow.position.set(a.x, 0.04, a.z);
+    const f = w.flood(w.t);
+    this.stadium.setFlood(f);
+    const cr = w.crowd(w.t);
+    this.stadium.setExcite(cr.excite);
+    this.stadium.setFlash(cr.flash);
+    this.dom.nameCard.classList.toggle('on', w.t >= w.nameIn && w.t < w.nameOut);
+    // the tunnel glow rims the athlete from behind while they are in or near it
+    const sh = w.shotAt(w.t);
+    const rim = th.rim;
+    if (sh.id === 'tunnel') {
+      rim.dir.value.set(-w.F.dir.x, 0.35, -w.F.dir.z).normalize();
+      rim.col.value.setRGB(1.6, 1.15, 0.7);
+    } else {
+      rim.dir.value.set(-0.5, 0.45, -0.75).normalize();
+      rim.col.value.setRGB(0.32, 0.27, 0.22);
+    }
+  }
+
+  /** Hand over to the throwing camera. skipped = a press cut it short (snap), else the crane already landed on the shot. */
+  endWalkout(skipped = false) {
+    if (this.state !== 'walkout') return;
+    this.walk = null;
+    this.thrower.group.position.set(0, 0, 0);
+    this.thrower.rim.dir.value.set(-0.5, 0.45, -0.75).normalize();
+    this.thrower.rim.col.value.setRGB(0.32, 0.27, 0.22);
+    this.walkShadow.visible = false;
+    this.stadium.setFlood(1);
+    this.stadium.setFlash(0);
+    this.stadium.setExcite(0.4);
+    this.dom.walk.hidden = true;
+    this.dom.nameCard.classList.remove('on');
+    this.dom.cineStatus.textContent = '';
+    document.body.classList.remove('cine');
+    this.post.set({ dof: 0 });
+    this.screen.setMode('frames');
+    this.setReadyVisuals();
+    this.setState('ready');
+    if (skipped) this.camSnap = 2;
+    this.announceAttempt();
+  }
+
+  // ------------------------------------------------------------------ stadium screen feed
+  startFeed(rec) {
+    this.feedDir.load(rec, { preroll: 1.1 });
+    this.feed = { rec, tau: -this.feedDir.preroll, wait: 1.0 };
+    this.screen.setMode('replay', rec.result && !rec.result.foul ? `${fmt(rec.result.distance)} M` : rec.result ? 'FOUL' : '');
+  }
+
+  stopFeed() {
+    this.feed = null;
+    if (this.screen) this.screen.setMode('frames');
+  }
+
+  updateFeed(dt) {
+    const f = this.feed;
+    if (!f) return;
+    if (f.wait > 0) {
+      f.wait -= dt;
+      return;
+    }
+    const ft = this.feedDir.flightT;
+    f.tau += dt * feedSpeed(f.tau, ft);
+    if (f.tau > ft + 1.6) {
+      f.tau = -this.feedDir.preroll; // loop, with a beat of the board's own cards in between
+      f.wait = 1.6;
+      this.screen.setMode('frames');
+    } else if (this.screen.mode === 'frames' && f.wait <= 0) this.startFeedLabel();
+  }
+
+  startFeedLabel() {
+    const r = this.feed && this.feed.rec;
+    if (r) this.screen.setMode('replay', r.result && !r.result.foul ? `${fmt(r.result.distance)} M` : 'FOUL');
+  }
+
+  /** Render the jumbotron feed for this frame (state swap: pose the past, render, put the live world back). */
+  renderFeed() {
+    const sc = this.screen;
+    const cam = this.feedCam;
+    if (sc.mode === 'replay' && this.feed && this.feed.wait <= 0) {
+      const dir = this.feedDir;
+      dir.snapshot();
+      dir.pose(this.feed.tau);
+      feedShot(dir, this.feed.tau, cam);
+      sc.cam.position.copy(cam.pos);
+      sc.cam.lookAt(cam.look);
+      if (sc.cam.fov !== cam.fov) {
+        sc.cam.fov = cam.fov;
+        sc.cam.updateProjectionMatrix();
+      }
+      sc.render(this.scene, this.obstacles.jumbo.screen);
+      dir.restore();
+    } else if (sc.mode === 'live' && this.walk) {
+      // the in-stadium director's close-up of the athlete walking out
+      const a = this.walkAth;
+      const fx = -Math.sin(-a.psi * DEG);
+      const fz = -Math.cos(-a.psi * DEG);
+      sc.cam.position.set(a.x + fx * 3.6 + fz * 0.8, 1.55, a.z + fz * 3.6 - fx * 0.8);
+      sc.cam.lookAt(a.x, 1.45, a.z);
+      if (sc.cam.fov !== 26) {
+        sc.cam.fov = 26;
+        sc.cam.updateProjectionMatrix();
+      }
+      sc.render(this.scene, this.obstacles.jumbo.screen);
+    }
+  }
+
+  /** Compile the feed's programs once at load (a phone would otherwise hitch the first time the board shows a replay). */
+  warmFeed() {
+    const sc = this.screen;
+    sc.cam.position.set(1.7, 1.5, -8.6);
+    sc.cam.lookAt(0, 1.1, 0);
+    sc.render(this.scene, this.obstacles.jumbo.screen);
+  }
+
+  // ------------------------------------------------------------------ landing + lighting helpers
+  /** Touchdown: a soft dust and turf puff thrown forward along the line of flight, clods, and a scuffed divot. */
+  landFx(q, vx = 0, vz = 0) {
+    const r = this._rng || (this._rng = mulberry32(4242));
+    const hx = vz;
+    const hz = -vx;
+    const hl = Math.hypot(hx, hz) || 1;
+    const ux = hx / hl;
+    const uz = hz / hl;
+    const lit = this.weatherId === 'sunset' ? [0.3, 0.2, 0.13] : [0.15, 0.125, 0.09]; // linear: dust under the floods, never glowing
+    for (let i = 0; i < 26; i++) {
+      const a = r() * Math.PI * 2;
+      const sp = 0.6 + r() * 1.8;
+      const fwd = 1.2 + r() * 2.4;
+      const k = 0.85 + r() * 0.3;
+      this.dust.spawn(q.x + (r() - 0.5) * 0.3, 0.12 + r() * 0.2, q.z + (r() - 0.5) * 0.3, Math.cos(a) * sp + ux * fwd, 0.5 + r() * 1.3, Math.sin(a) * sp + uz * fwd, lit[0] * k, lit[1] * k, lit[2] * k, 0.5 + r() * 0.5, 1.4 + r() * 1.1, -0.15, 2.4);
+    }
+    for (let i = 0; i < 10; i++) {
+      // turf spray: small, dark green, falls fast
+      this.particles.spawn(q.x, 0.1, q.z, (r() - 0.5) * 3 + ux * 2.5, 1.5 + r() * 2.5, (r() - 0.5) * 3 + uz * 2.5, 0.06, 0.12, 0.04, 0.16, 0.7 + r() * 0.3, 9.8, 0.3);
+    }
+    this.debris.spawn('clod', [q.x, 0.15, q.z], 0x3a2f22, 3.2, 6, 1);
+    this.divot.position.set(q.x + ux * 0.25, 0.035, q.z + uz * 0.25);
+    this.divot.rotation.z = Math.atan2(ux, uz);
+    this.divot.visible = true;
+  }
+
+  /** Phones skip image-based light on the big surfaces; the athlete and the discus still get it (they are the subject). */
+  heroEnv() {
+    if (this.tier.name !== 'low' || !this.thrower) return;
+    const env = this.env.get('night');
+    this.thrower.body.material.envMap = env;
+    this.thrower.body.material.needsUpdate = true;
+    this.discus.body.material.envMap = env;
+    this.discus.body.material.needsUpdate = true;
   }
 
   // ------------------------------------------------------------------ nose gauge + HUD
@@ -1825,7 +2080,7 @@ export class Game {
     }
     if (!spin && this.state !== 'ready' && !OVERLAYS.includes(this.state)) {
       d.dial.classList.remove('hot', 'perfect');
-      d.dialState.textContent = this.state === 'replay' ? 'REPLAY' : 'AWAY';
+      d.dialState.textContent = this.state === 'replay' ? 'REPLAY' : this.state === 'walkout' ? 'READY' : 'AWAY';
       d.dialState.className = 'num';
     }
     void showMeters;
@@ -1921,8 +2176,53 @@ export class Game {
     return { k, fov };
   }
 
+  /** A directed shot (walk-out, cinematic replay): the camera is placed exactly, cuts snap, depth of field follows. */
+  directedCamera(c, dt) {
+    const cam = this.camera;
+    const fov = c.fov > 0 ? c.fov : c.fov === 0 ? this.baseFov : this.baseFov + ((c.fovFrom || this.baseFov) - this.baseFov) * (1 - (c.fovMix || 0));
+    const snap = this.camSnap > 0 || c.cut;
+    if (this.camSnap > 0) this.camSnap--;
+    if (snap) {
+      this.camPos.copy(c.pos);
+      this.camLook.copy(c.look);
+    } else {
+      // directed moves are already smooth: follow tightly (a light filter only hides frame-time jitter)
+      this.camPos.lerp(c.pos, 1 - Math.exp(-28 * dt));
+      this.camLook.lerp(c.look, 1 - Math.exp(-28 * dt));
+    }
+    cam.position.copy(this.camPos);
+    cam.lookAt(this.camLook);
+    if (Math.abs(cam.fov - fov) > 0.01) {
+      cam.fov = snap ? fov : cam.fov + (fov - cam.fov) * (1 - Math.exp(-14 * dt));
+      cam.updateProjectionMatrix();
+    }
+    // depth of field only where it is cinematic, and only on the full post path (phones skip it)
+    this.post.set({ dof: this.reducedMotion ? 0 : c.dof || 0, focus: c.focus || 5, range: c.range || 3 });
+    if (snap) {
+      this.post.cur.dof = this.post.want.dof;
+      this.post.cur.focus = this.post.want.focus;
+      this.post.cur.range = this.post.want.range;
+    }
+    this.shake *= Math.exp(-5 * dt);
+  }
+
   updateCamera(dt) {
     const cam = this.camera;
+    if (this.state === 'walkout' && this.walk) {
+      this.directedCamera(this.walk.camera(this.walk.t, cam.aspect, this.walkAth), dt);
+      return;
+    }
+    if (this.state === 'replay' && this.rt) {
+      const r = this.rt;
+      const sh = r.shots[r.i];
+      const c = this.shotCam;
+      const u = Math.min(1, Math.max(0, (r.tau - sh.a) / Math.max(1e-6, sh.b - sh.a)));
+      sh.cam(this.replayDir, r.tau, u, cam.aspect, c);
+      c.cut = r.cut;
+      r.cut = false;
+      this.directedCamera(c, dt);
+      return;
+    }
     const want = this._want.set(0, 0, 0);
     const look = this._look.set(0, 0, 0);
     let k = 3.2;
@@ -1931,10 +2231,10 @@ export class Game {
     let focus = null; // what a collision-aware shot must keep visible (three.js space)
     const preset = this.camId;
     const st = this.viewState();
-    const flying = (st === 'flight' && this.cur && this.cur.stage === 'air') || (st === 'replay' && this.rt && this.rt.stage === 'air');
-    const landed = (st === 'flight' && this.cur && this.cur.stage === 'landed') || (st === 'replay' && this.rt && this.rt.stage === 'landed');
+    const flying = st === 'flight' && this.cur && this.cur.stage === 'air';
+    const landed = st === 'flight' && this.cur && this.cur.stage === 'landed';
     if (flying) {
-      const s = st === 'replay' ? this.replayS : this.cur.f.s;
+      const s = this.cur.f.s;
       const pos = toThree(s.x, s.y, s.z, this._pos);
       const v3 = this._v3.set(s.vz, 0, -s.vx);
       if (v3.lengthSq() > 1e-4) {
@@ -2066,8 +2366,8 @@ export class Game {
   targetTimeScale() {
     const slow = this.reducedMotion ? 0.6 : SLOW_SCALE;
     let s = null;
+    // the cinematic replay carries its own slow motion per shot
     if (this.state === 'flight' && this.cur && this.cur.stage === 'air') s = this.cur.f.s;
-    else if (this.state === 'replay' && this.rt && this.rt.stage === 'air') s = this.replayS;
     if (s && s.vy < 0 && s.y < 8 && s.y / Math.max(2, -s.vy) < 0.26 && s.y > 0) return slow;
     if (this.state === 'flight' && this.cur && this.cur.stage === 'landed' && this.cur.landedT < 0.2) return slow;
     return 1;
@@ -2089,7 +2389,11 @@ export class Game {
       this.obstacles.update(this.tO, sdt);
     } else if (this.state === 'flight') this.updateFlight(sdt);
     else if (this.state === 'replay') this.updateReplay(sdt);
-    else {
+    else if (this.state === 'walkout') {
+      this.tO += sdt;
+      this.obstacles.update(this.tO, sdt);
+      this.updateWalkout(dt);
+    } else {
       this.tO += sdt;
       this.obstacles.update(this.tO, sdt);
     }
@@ -2113,16 +2417,22 @@ export class Game {
       }
     }
     if (this.pending && this.clock >= this.pending.at && this.state === 'final') this.openInitials();
+    if (this.feed && !FEED_STATES.includes(this.state) && this.state !== 'flight') this.stopFeed();
+    this.updateFeed(dt);
     this.particles.update(sdt);
+    this.dust.update(sdt);
     this.debris.update(sdt);
     this.stadium.update(this.clock, this.camera);
     this.announcer.update();
     this.updateHud();
     this.updateCamera(dt);
+    this.post.tick(dt);
+    this.frameDt = dt;
   }
 
   render() {
-    this.renderer.render(this.scene, this.camera);
+    if (this.screen.mode !== 'frames' && this.screen.due()) this.renderFeed();
+    this.post.render(this.scene, this.camera);
   }
 
   /** Adaptive resolution: if we stay slow for ~1 s, drop the pixel ratio a notch (never below 1). */
@@ -2207,7 +2517,11 @@ export class Game {
     cancelAnimationFrame(this.raf);
     Object.values(this.stadiums).forEach((st) => st.dispose());
     this.particles.dispose();
+    this.dust.dispose();
     this.debris.dispose();
+    this.post.dispose();
+    this.screen.dispose();
+    this.env.dispose();
     this.obstacles.dispose();
     this.thrower.dispose();
     this.rival.dispose();

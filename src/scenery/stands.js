@@ -707,7 +707,7 @@ export function buildCrowd(seats, tier, onFrame) {
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   mesh.frustumCulled = false;
 
-  const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uExcite: { value: 0.3 }, uCalm: { value: 1 }, uBright: { value: 1 }, uTint: { value: new THREE.Color(1, 1, 1) } }]);
+  const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uExcite: { value: 0.3 }, uCalm: { value: 1 }, uBright: { value: 1 }, uDim: { value: 1 }, uFlash: { value: 0 }, uTint: { value: new THREE.Color(1, 1, 1) } }]);
   const mat = new THREE.ShaderMaterial({
     uniforms,
     fog: true,
@@ -737,7 +737,7 @@ export function buildCrowd(seats, tier, onFrame) {
     fragmentShader: /* glsl */ `
       #include <common>
       #include <fog_pars_fragment>
-      uniform float uTime; uniform float uExcite; uniform float uBright; uniform vec3 uTint;
+      uniform float uTime; uniform float uExcite; uniform float uBright; uniform float uDim; uniform float uFlash; uniform vec3 uTint;
       varying vec2 vUv; varying vec3 vCol; varying vec4 vM; varying float vSc;
       float sdEll(vec2 p, vec2 r){ return (length(p / r) - 1.0) * min(r.x, r.y); }
       float sdRound(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
@@ -787,12 +787,14 @@ export function buildCrowd(seats, tier, onFrame) {
         c *= vM.w * 1.08;
         // occasional phone / camera flash
         float f = fract(sin(vM.x * 913.0 + floor(uTime * 5.0 + vM.x * 7.0) * 37.1) * 43758.5);
-        float flash = step(0.9985, f);
+        float flash = step(0.9985 - 0.012 * uFlash, f);
         c += flash * vec3(1.0, 0.96, 0.88) * 1.4 * smoothstep(0.2, 0.0, length(p - vec2(0.05, 0.62)));
         // phone screens: a few faces lit from below
         float phone = step(0.93, fract(vM.x * 19.7)) * step(vM.w, 0.9);
         c += phone * vec3(0.55, 0.62, 0.75) * smoothstep(0.1, 0.0, length(p - vec2(0.0, 0.62))) * 0.5;
         c *= uBright * uTint;
+        // floods dimmed (walk-out): the stands go dark but the phone screens and flashes do not
+        c = c * uDim + flash * vec3(1.0, 0.96, 0.88) * 1.4 * smoothstep(0.2, 0.0, length(p - vec2(0.05, 0.62))) * (1.0 - uDim) + phone * vec3(0.55, 0.62, 0.75) * smoothstep(0.1, 0.0, length(p - vec2(0.0, 0.62))) * 0.5 * (1.0 - uDim);
         gl_FragColor = vec4(c, alpha);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>

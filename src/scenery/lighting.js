@@ -39,9 +39,14 @@ export function buildLighting(ctx) {
       uniforms: { uI: { value: 0.1 }, uCol: { value: new THREE.Color(0xffe0b0) } },
       vertexShader: `varying vec3 vN; varying vec3 vV; varying float vA;
         void main(){ vec4 mv = modelViewMatrix*vec4(position,1.0); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); vA = clamp(-position.y/105.0, 0.0, 1.0); gl_Position = projectionMatrix*mv; }`,
+      // NaN-safe: the interpolated normal can collapse to zero near the apex; normalize(0) is NaN, which an 8-bit
+      // canvas clamps away but a half-float HDR target keeps (and the bloom spreads it over the whole frame)
       fragmentShader: `uniform float uI; uniform vec3 uCol; varying vec3 vN; varying vec3 vV; varying float vA;
-        void main(){ float f = pow(abs(dot(normalize(vN), normalize(vV))), 2.2);
-          float a = uI * f * pow(1.0 - vA, 1.6) * smoothstep(0.0, 0.06, vA);
+        void main(){
+          float cs = clamp(abs(dot(vN, vV)) / max(length(vN) * length(vV), 1e-4), 0.0, 1.0);
+          float f = pow(cs + 1e-5, 2.2);
+          float a = uI * f * pow(clamp(1.0 - vA, 0.0, 1.0) + 1e-5, 1.6) * smoothstep(0.0, 0.06, vA);
+          if ((floatBitsToUint(a) & 0x7f800000u) == 0x7f800000u) a = 0.0;
           gl_FragColor = vec4(uCol, a); }`,
     }),
   );
@@ -134,8 +139,9 @@ export function buildLighting(ctx) {
     setLevel(k, beamI = 0.1) {
       spots.forEach((sl, i) => (sl.intensity = spotBase[i] * k));
       haloMat.opacity = 0.8 * Math.min(1, 0.2 + k);
-      lamps.material.color.setHex(0xfff3dc).multiplyScalar(0.35 + 0.65 * k);
-      beamMat.uniforms.uI.value = beamI * Math.min(1, k * 1.5);
+      lamps.material.color.setHex(0xfff3dc).multiplyScalar((0.35 + 0.65 * k) * 5 * Math.min(1, k * 1.4 + 0.02));
+      // the haze cones were tuned as a display-space wash; in the linear HDR buffer the same add is ~8x stronger in the dark
+      beamMat.uniforms.uI.value = beamI * Math.min(1, k * 1.5) * (ctx.hdr ? 0.12 : 1);
     },
   };
 }

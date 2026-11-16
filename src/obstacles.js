@@ -594,7 +594,45 @@ export function buildObstacles(scene, fx) {
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     disposables.push(tex);
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(13.3, 7.5), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+    // The screen: its own animated cards (tFrames), or a camera feed rendered into a target (tFeed: the slow-motion
+    // replay after a throw, a live shot during the walk-out) with a broadcast bug on top (tOver). LED pixel pitch and
+    // HDR brightness so it blooms like a real board at night.
+    const screenMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tFrames: { value: tex },
+        tFeed: { value: null },
+        tOver: { value: null },
+        uMode: { value: 0 },
+        uBright: { value: 1.55 },
+        uTime: { value: 0 },
+        uCrack: { value: 0 },
+      },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `uniform sampler2D tFrames; uniform sampler2D tFeed; uniform sampler2D tOver; uniform float uMode; uniform float uBright; uniform float uTime; uniform float uCrack;
+        varying vec2 vUv;
+        #include <common>
+        void main(){
+          vec3 c = texture2D(tFrames, vUv).rgb;
+          if (uMode > 0.5) {
+            vec2 uv = vUv;
+            // a hit board glitches: torn rows and a colour split
+            float tear = uCrack * step(0.93, fract(sin(floor(vUv.y * 40.0) * 91.7 + floor(uTime * 12.0)) * 4375.85));
+            uv.x += tear * 0.04;
+            vec3 f = texture2D(tFeed, uv).rgb;
+            f.r = mix(f.r, texture2D(tFeed, uv + vec2(0.006 * uCrack, 0.0)).r, uCrack);
+            vec4 o = texture2D(tOver, vUv);
+            c = mix(f * 1.15, o.rgb, o.a);
+          }
+          // LED pitch: a faint dark grid between the diodes, visible up close, gone at distance (it averages out)
+          vec2 g = abs(fract(vUv * vec2(256.0, 144.0)) - 0.5);
+          c *= 0.86 + 0.14 * smoothstep(0.5, 0.32, max(g.x, g.y));
+          gl_FragColor = vec4(c * uBright, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+    });
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(13.3, 7.5), screenMat);
+    screen.name = 'jumbo-screen';
     const frame = new THREE.Mesh(new THREE.BoxGeometry(14, 8.2, 0.8), M(0x0c0f18, { metalness: 0.6, roughness: 0.4 }));
     frame.position.z = -0.45;
     screen.position.y = 0;
@@ -671,9 +709,15 @@ export function buildObstacles(scene, fx) {
       key: 'jumbotron',
       hitAt: null,
       meta: { label: 'JUMBOTRON SHATTER', mult: 3, speedMul: 0.8, kick: 2 },
+      screen,
+      screenMat,
       update(t, dt) {
         const broken = this.hitAt !== null && t >= this.hitAt;
-        draw(t, broken);
+        screenMat.uniforms.uCrack.value = broken ? 1 : 0;
+        screenMat.uniforms.uTime.value = t;
+        if (screenMat.uniforms.uMode.value > 0.5 && !broken) {
+          // the feed owns the screen; the cards keep their clock but are not redrawn
+        } else draw(t, broken);
         if (broken && t - this.hitAt < 2.2 && dt > 0) {
           const w = g.position;
           fx.particles.spawn(w.x + (Math.random() - 0.5) * 11, 18 + Math.random() * 4, w.z + 0.6, (Math.random() - 0.5) * 4, -3 - Math.random() * 3, 2 + Math.random() * 3, 1, 0.9, 0.5, 0.35, 0.9, 9, 0);
@@ -701,6 +745,7 @@ export function buildObstacles(scene, fx) {
   return {
     root,
     list,
+    jumbo,
     layout: () => L,
     setLayout(l) {
       L = l;

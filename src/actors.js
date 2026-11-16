@@ -58,135 +58,243 @@ function numberTexture(num, fg, outline) {
   return t;
 }
 
+// ---- athlete -------------------------------------------------------------------------------------------------------
+// Profiles for the tapered limbs: [y, radius] from the joint down (lathe, closed at both ends). Real throwers are big:
+// heavy thighs, a calf bulge, thick forearms. Lengths match the joints below, so the pose maths is unchanged.
+const THIGH = [[0.035, 0], [0.0, 0.096], [-0.1, 0.104], [-0.24, 0.09], [-0.36, 0.074], [-0.42, 0.066], [-0.445, 0]];
+const SHIN = [[0.03, 0], [0.0, 0.066], [-0.07, 0.075], [-0.15, 0.072], [-0.27, 0.056], [-0.37, 0.044], [-0.41, 0.043], [-0.43, 0]];
+const UPPER_ARM = [[0.03, 0], [0.0, 0.066], [-0.07, 0.07], [-0.17, 0.062], [-0.27, 0.052], [-0.33, 0]];
+const FOREARM = [[0.02, 0], [0.0, 0.054], [-0.06, 0.058], [-0.2, 0.043], [-0.27, 0.036], [-0.3, 0]];
+const TORSO = [[-0.06, 0], [-0.045, 0.148], [0.05, 0.165], [0.16, 0.172], [0.3, 0.196], [0.42, 0.206], [0.5, 0.19], [0.56, 0.13], [0.6, 0.07], [0.62, 0]];
+const TORSO_SX = 1.12;
+const TORSO_SZ = 0.7;
+// LatheGeometry wants the profile bottom-to-top (outward normals, front-facing winding)
+const lathe = (prof, seg = 12) => new THREE.LatheGeometry([...prof].sort((a, b) => a[0] - b[0]).map(([y, r]) => new THREE.Vector2(r, y)), seg);
+
 /**
- * Stylised athlete built from primitives: capsule limbs on real joints (hip, knee, shoulder, elbow), jersey with a
- * number on the chest and back, shorts, socks, shoes, hair / headband / shades per persona. Faces -Z at facing 0
- * (the throw direction); the throwing arm is the right one (+X). Poses are pure functions of their arguments, so
- * the replay and the live game drive it the same way: idle(t), spin(rot, power), release(k).
+ * Merges the athlete's parts into ONE skinned mesh: every vertex rides one bone (rigid skinning), the bones mirror the
+ * old node hierarchy, so idle / spin / release / walk set rotations exactly as before but the whole body is a single
+ * draw call (it was ~45), and a single shadow-map draw. Per-vertex colour plus a per-vertex surface (roughness, glow).
+ */
+class SkinBuilder {
+  constructor() {
+    this.pos = [];
+    this.nor = [];
+    this.col = [];
+    this.surf = [];
+    this.si = [];
+    this.sw = [];
+    this.idx = [];
+  }
+
+  add(geo, bone, boneIndex, local, color, rough = 0.6, glow = 0) {
+    const m = new THREE.Matrix4().multiplyMatrices(bone.matrixWorld, local || new THREE.Matrix4());
+    const nm = new THREE.Matrix3().getNormalMatrix(m);
+    const p = geo.attributes.position;
+    const n = geo.attributes.normal;
+    const base = this.pos.length / 3;
+    const v = new THREE.Vector3();
+    const c = new THREE.Color(color);
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(m);
+      this.pos.push(v.x, v.y, v.z);
+      v.fromBufferAttribute(n, i).applyMatrix3(nm).normalize();
+      this.nor.push(v.x, v.y, v.z);
+      // a touch of baked occlusion: undersides a little darker than tops
+      const ao = 0.86 + 0.14 * Math.max(0, Math.min(1, v.y * 0.5 + 0.6));
+      this.col.push(c.r * ao, c.g * ao, c.b * ao);
+      this.surf.push(rough, glow);
+      this.si.push(boneIndex, 0, 0, 0);
+      this.sw.push(1, 0, 0, 0);
+    }
+    if (geo.index) for (let i = 0; i < geo.index.count; i++) this.idx.push(base + geo.index.getX(i));
+    else for (let i = 0; i < p.count; i++) this.idx.push(base + i);
+    geo.dispose();
+  }
+
+  build() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    g.setAttribute('aSurf', new THREE.Float32BufferAttribute(this.surf, 2));
+    g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(this.si, 4));
+    g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(this.sw, 4));
+    g.setIndex(this.idx.length > 65535 ? new THREE.Uint32BufferAttribute(this.idx, 1) : new THREE.Uint16BufferAttribute(this.idx, 1));
+    g.computeBoundingSphere();
+    return g;
+  }
+}
+
+/** Athlete skin/fabric material: per-vertex roughness + glow, and a rim light the cinematic shots can aim. */
+function athleteMaterial() {
+  const rim = { col: { value: new THREE.Color(0.32, 0.27, 0.22) }, dir: { value: new THREE.Vector3(-0.5, 0.45, -0.75).normalize() } };
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, envMapIntensity: 0.9 });
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uRimCol = rim.col;
+    sh.uniforms.uRimDir = rim.dir;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute vec2 aSurf;\nvarying vec2 vSurf;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSurf = aSurf;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vSurf;\nuniform vec3 uRimCol;\nuniform vec3 uRimDir;')
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vSurf.x;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vSurf.y;')
+      .replace(
+        '#include <opaque_fragment>',
+        `{
+          vec3 rdv = normalize((viewMatrix * vec4(uRimDir, 0.0)).xyz);
+          float fres = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.6);
+          outgoingLight += uRimCol * fres * clamp(dot(normal, rdv) * 0.7 + 0.45, 0.0, 1.0);
+        }
+        #include <opaque_fragment>`,
+      );
+  };
+  mat.customProgramCacheKey = () => 'dd-athlete-1';
+  return { mat, rim };
+}
+
+/**
+ * The athlete: one skinned mesh on a joint hierarchy (hip, knee, foot, shoulder, elbow, hand), singlet with a number on
+ * the chest and back, shorts, socks, throwing shoes, hair / headband / shades per persona. Faces -Z at facing 0 (the
+ * throw direction); the throwing arm is the right one (+X). Poses are pure functions of their arguments, so the replay
+ * and the live game drive it the same way: idle(t), spin(rot, power), release(k), walk(phase, k).
  */
 export function buildThrower(persona = null) {
   const col = persona ? persona.colors : { jersey: 0xff8a1f, trim: 0xffffff, shorts: 0x10131c, skin: 0xc98a5e, hair: 0x15110e, shoes: 0xffffff, accent: 0xffd23f };
   const look = persona ? persona.look : { hair: 'short', headband: true };
   const num = persona ? persona.number : 7;
   const g = new THREE.Group();
-  const mats = [];
-  const mat = (color, o = {}) => {
-    const m = M(color, o);
-    mats.push(m);
-    return m;
+  const extraMats = [];
+  const bones = [];
+  const bone = (parent, x = 0, y = 0, z = 0) => {
+    const b = new THREE.Bone();
+    b.position.set(x, y, z);
+    parent.add(b);
+    bones.push(b);
+    return b;
   };
-  const skin = mat(col.skin);
-  const jersey = mat(col.jersey, { emissive: new THREE.Color(col.jersey).multiplyScalar(0.18) });
-  const trim = mat(col.trim);
-  const shorts = mat(col.shorts);
-  const hairM = mat(col.hair, { roughness: 0.9 });
-  const dark = mat(0x10131c);
-  const white = mat(0xf4f8ff);
-  const shoeM = mat(col.shoes);
-  const accentM = mat(col.accent, { emissive: new THREE.Color(col.accent).multiplyScalar(0.25) });
-  const node = (parent, x = 0, y = 0, z = 0) => {
-    const n = new THREE.Group();
-    n.position.set(x, y, z);
-    parent.add(n);
-    return n;
+  const hips = bone(g, 0, 0.98, 0);
+  const leg = (s) => {
+    const hip = bone(hips, s * 0.115, -0.04, 0);
+    const knee = bone(hip, 0, -0.42, 0);
+    const foot = bone(knee, 0, -0.43, 0);
+    return { hip, knee, foot };
   };
-  const mesh = (parent, geo, m, x = 0, y = 0, z = 0) => {
-    const o = new THREE.Mesh(geo, m);
-    o.position.set(x, y, z);
-    parent.add(o);
-    return o;
-  };
-
-  const hips = node(g, 0, 0.98, 0);
-  const pelvis = mesh(hips, new THREE.CapsuleGeometry(0.16, 0.08, 4, 10), shorts, 0, -0.02, 0);
-  pelvis.scale.set(1.25, 1, 0.85);
-
-  const leg = (s, sockM, shoe) => {
-    const hip = node(hips, s * 0.12, -0.04, 0);
-    mesh(hip, new THREE.CapsuleGeometry(0.1, 0.1, 4, 8), shorts, 0, -0.06, 0); // short leg of the shorts
-    mesh(hip, new THREE.CapsuleGeometry(0.088, 0.26, 4, 8), skin, 0, -0.24, 0); // thigh
-    const knee = node(hip, 0, -0.42, 0);
-    mesh(knee, new THREE.SphereGeometry(0.075, 10, 8), skin);
-    mesh(knee, new THREE.CapsuleGeometry(0.072, 0.28, 4, 8), skin, 0, -0.2, 0); // shin
-    mesh(knee, new THREE.CylinderGeometry(0.07, 0.066, 0.17, 10), sockM, 0, -0.33, 0); // sock
-    const foot = node(knee, 0, -0.43, 0);
-    const shoeBody = mesh(foot, new THREE.CapsuleGeometry(0.058, 0.13, 4, 8), shoe, 0, -0.03, -0.07);
-    shoeBody.rotation.x = Math.PI / 2;
-    shoeBody.scale.set(1, 1, 0.8);
-    mesh(foot, new THREE.BoxGeometry(0.1, 0.02, 0.2), dark, 0, -0.075, -0.075); // sole
-    return { hip, knee };
-  };
-  const legR = leg(1, look.mismatch ? accentM : white, shoeM);
-  const legL = leg(-1, white, look.mismatch ? white : shoeM);
-
-  const torso = node(hips, 0, 0.06, 0);
-  const body = mesh(torso, new THREE.CapsuleGeometry(0.2, 0.4, 5, 12), jersey, 0, 0.3, 0);
-  body.scale.set(1.18, 1, 0.7);
-  const hem = mesh(torso, new THREE.TorusGeometry(0.205, 0.02, 6, 20), trim, 0, 0.02, 0);
-  hem.rotation.x = Math.PI / 2;
-  hem.scale.set(1.18, 0.7, 1);
-  const collar = mesh(torso, new THREE.TorusGeometry(0.1, 0.02, 6, 16), trim, 0, 0.58, 0);
-  collar.rotation.x = Math.PI / 2;
-  const numFg = '#' + new THREE.Color(col.trim).getHexString();
-  const backTex = numberTexture(num, numFg, 'rgba(8,10,16,0.85)');
-  const backM = new THREE.MeshBasicMaterial({ map: backTex, transparent: true, depthWrite: false, toneMapped: false, polygonOffsetFactor: -2, polygonOffset: true });
-  mats.push(backM);
-  const back = mesh(torso, new THREE.PlaneGeometry(0.26, 0.26), backM, 0, 0.34, 0.148);
-  const front = mesh(torso, new THREE.PlaneGeometry(0.2, 0.2), backM, 0, 0.4, -0.148);
-  front.rotation.y = Math.PI;
-  void back;
-  mesh(torso, new THREE.CylinderGeometry(0.05, 0.06, 0.1, 8), skin, 0, 0.64, 0); // neck
-
-  // head
-  const head = node(torso, 0, 0.8, 0);
-  mesh(head, new THREE.SphereGeometry(0.125, 16, 12), skin);
-  mesh(head, new THREE.SphereGeometry(0.03, 8, 6), skin, 0, -0.01, -0.11); // nose
-  for (const s of [-1, 1]) {
-    mesh(head, new THREE.SphereGeometry(0.02, 6, 6), dark, s * 0.045, 0.02, -0.103);
-    mesh(head, new THREE.SphereGeometry(0.026, 6, 6), skin, s * 0.115, -0.005, 0.0); // ears
-  }
-  const mouth = mesh(head, new THREE.TorusGeometry(0.03, 0.006, 4, 10, Math.PI), dark, 0, -0.045, -0.104);
-  mouth.rotation.z = Math.PI;
-  if (look.hair === 'spikes') {
-    const cap = mesh(head, new THREE.SphereGeometry(0.122, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.52), hairM, 0, 0.012, 0.004);
-    void cap;
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2;
-      const sp = mesh(head, new THREE.ConeGeometry(0.03, 0.1, 6), hairM, Math.cos(a) * 0.07, 0.13, Math.sin(a) * 0.07);
-      sp.rotation.set(Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5);
-    }
-    mesh(head, new THREE.ConeGeometry(0.034, 0.12, 6), hairM, 0, 0.17, 0);
-  } else if (look.hair === 'puff') {
-    for (const [x, y, z, r] of [[0, 0.16, 0.02, 0.13], [-0.1, 0.12, 0.03, 0.09], [0.1, 0.12, 0.03, 0.09], [0, 0.1, 0.1, 0.09]]) mesh(head, new THREE.SphereGeometry(r, 10, 8), hairM, x, y, z);
-  } else {
-    mesh(head, new THREE.SphereGeometry(0.122, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), hairM, 0, 0.012, 0.01);
-  }
-  if (look.headband) {
-    const hb = mesh(head, new THREE.TorusGeometry(0.118, 0.02, 6, 20), accentM, 0, 0.055, 0);
-    hb.rotation.x = Math.PI / 2;
-  }
-  if (look.shades) mesh(head, new THREE.BoxGeometry(0.2, 0.045, 0.03), dark, 0, 0.025, -0.108);
-  if (look.beard) {
-    const b = mesh(head, new THREE.SphereGeometry(0.1, 10, 8, 0, Math.PI * 2, Math.PI * 0.45, Math.PI * 0.4), hairM, 0, -0.04, -0.02);
-    b.scale.set(1, 1, 1.02);
-  }
-
-  // arms: capsules along +X (right, throwing) and -X (left), pivoting at the shoulder; the elbow is a second pivot
+  const legR = leg(1);
+  const legL = leg(-1);
+  const torso = bone(hips, 0, 0.06, 0);
+  const head = bone(torso, 0, 0.8, 0);
   const arm = (s) => {
-    const sh = node(torso, s * 0.27, 0.52, 0);
-    mesh(sh, new THREE.SphereGeometry(0.075, 10, 8), jersey);
-    const upper = mesh(sh, new THREE.CapsuleGeometry(0.055, 0.2, 4, 8), skin, s * 0.17, 0, 0);
-    upper.rotation.z = Math.PI / 2;
-    const elbow = node(sh, s * 0.32, 0, 0);
-    mesh(elbow, new THREE.SphereGeometry(0.055, 8, 6), skin);
-    const fore = mesh(elbow, new THREE.CapsuleGeometry(0.047, 0.2, 4, 8), skin, s * 0.14, 0, 0);
-    fore.rotation.z = Math.PI / 2;
-    const hand = node(elbow, s * 0.3, 0, 0);
-    mesh(hand, new THREE.SphereGeometry(0.056, 8, 6), skin);
+    const sh = bone(torso, s * 0.27, 0.5, 0);
+    const elbow = bone(sh, s * 0.32, 0, 0);
+    const hand = bone(elbow, s * 0.3, 0, 0);
     return { sh, elbow, hand };
   };
   const armR = arm(1);
   const armL = arm(-1);
+  g.updateMatrixWorld(true);
+
+  // ---- geometry, baked at the rest pose -------------------------------------------------------------------------
+  const B = new SkinBuilder();
+  const bi = (b) => bones.indexOf(b);
+  const M4 = (x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = sx, sz = sx) =>
+    new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(sx, sy, sz));
+  const put = (geo, b, local, color, rough, glow) => B.add(geo, b, bi(b), local, color, rough, glow);
+  const skin = col.skin;
+  const jersey = col.jersey;
+  const R_SKIN = 0.52; // a sheen of sweat under the floods
+  const R_CLOTH = 0.82;
+
+  // pelvis + shorts
+  put(new THREE.CapsuleGeometry(0.165, 0.1, 4, 12), hips, M4(0, -0.02, 0, 0, 0, 0, 1.22, 1, 0.82), col.shorts, R_CLOTH);
+  for (const L of [legR, legL]) {
+    const s = L === legR ? 1 : -1;
+    put(lathe(THIGH, 12), L.hip, null, skin, R_SKIN);
+    put(new THREE.CylinderGeometry(0.112, 0.104, 0.2, 12), L.hip, M4(0, -0.07, 0), col.shorts, R_CLOTH); // shorts leg
+    put(new THREE.SphereGeometry(0.062, 10, 8), L.knee, M4(0, 0, -0.004), skin, R_SKIN); // knee
+    put(lathe(SHIN, 12), L.knee, M4(0, 0, 0.008, 0, 0, 0, 1, 1, 1.06), skin, R_SKIN);
+    const sockC = look.mismatch && s > 0 ? col.accent : 0xf2f4f8;
+    put(new THREE.CylinderGeometry(0.047, 0.044, 0.13, 10), L.knee, M4(0, -0.37, 0), sockC, 0.9);
+    // throwing shoe: low, round-toed, flat sole (no spikes in the circle)
+    const shoeC = look.mismatch && s < 0 ? 0xf4f8ff : col.shoes;
+    put(new THREE.CapsuleGeometry(0.052, 0.15, 4, 10), L.foot, M4(0, -0.035, -0.065, Math.PI / 2, 0, 0, 1, 1, 0.78), shoeC, 0.45);
+    put(new THREE.BoxGeometry(0.1, 0.022, 0.25), L.foot, M4(0, -0.072, -0.065), 0x15171c, 0.7);
+  }
+  // torso: a tapered singlet (V-taper, flattened front to back) with trim at the hem, neck and arm holes
+  put(lathe(TORSO, 18), torso, M4(0, 0.02, 0, 0, 0, 0, TORSO_SX, 1, TORSO_SZ), jersey, R_CLOTH, 0.1);
+  const hem = new THREE.TorusGeometry(0.17, 0.016, 6, 22);
+  hem.rotateX(Math.PI / 2);
+  put(hem, torso, M4(0, -0.01, 0, 0, 0, 0, TORSO_SX * 0.98, 1, TORSO_SZ * 0.98), col.trim, R_CLOTH, 0.1);
+  const collar = new THREE.TorusGeometry(0.085, 0.015, 6, 18);
+  collar.rotateX(Math.PI / 2);
+  put(collar, torso, M4(0, 0.585, 0, 0, 0, 0, 1.1, 1, 0.9), col.trim, R_CLOTH, 0.1);
+  put(new THREE.CylinderGeometry(0.062, 0.072, 0.14, 12), torso, M4(0, 0.66, 0.0), skin, R_SKIN); // neck
+  // trapezius + deltoids: skin (a singlet leaves the shoulders bare)
+  for (const s of [-1, 1]) put(new THREE.SphereGeometry(0.07, 10, 8), torso, M4(s * 0.13, 0.55, 0.012, 0, 0, s * 0.42, 1.3, 0.48, 0.82), skin, R_SKIN);
+  for (const A of [armR, armL]) {
+    const s = A === armR ? 1 : -1;
+    put(new THREE.SphereGeometry(0.071, 12, 10), A.sh, M4(s * 0.012, 0.004, 0, 0, 0, 0, 1.08, 1, 0.96), skin, R_SKIN);
+    put(lathe(UPPER_ARM, 10), A.sh, M4(0, 0, 0, 0, 0, s * Math.PI / 2), skin, R_SKIN);
+    put(new THREE.SphereGeometry(0.05, 8, 6), A.elbow, null, skin, R_SKIN);
+    put(lathe(FOREARM, 10), A.elbow, M4(0, 0, 0, 0, 0, s * Math.PI / 2), skin, R_SKIN);
+    put(new THREE.CapsuleGeometry(0.038, 0.07, 4, 8), A.hand, M4(s * 0.03, 0, 0, 0, 0, Math.PI / 2, 1, 1, 0.62), skin, R_SKIN); // palm + fingers
+    put(new THREE.CapsuleGeometry(0.016, 0.04, 3, 6), A.hand, M4(s * 0.005, 0, -0.04, 0.6, 0, 0), skin, R_SKIN); // thumb
+    put(new THREE.CylinderGeometry(0.04, 0.04, 0.03, 10), A.elbow, M4(s * 0.275, 0, 0, 0, 0, Math.PI / 2), col.accent, 0.8, 0.15); // wristband
+  }
+  // head: skull, jaw, nose, ears, eyes, brow
+  put(new THREE.SphereGeometry(0.118, 18, 14), head, M4(0, 0.01, 0.005, 0, 0, 0, 0.93, 1.06, 1), skin, R_SKIN);
+  put(new THREE.SphereGeometry(0.088, 14, 10), head, M4(0, -0.052, -0.022, 0, 0, 0, 1, 0.82, 1), skin, R_SKIN); // jaw
+  put(new THREE.ConeGeometry(0.022, 0.06, 8), head, M4(0, -0.01, -0.118, -1.3, 0, 0), skin, R_SKIN);
+  for (const s of [-1, 1]) {
+    put(new THREE.SphereGeometry(0.026, 8, 6), head, M4(s * 0.11, -0.005, 0.005, 0, 0, 0, 0.6, 1, 1), skin, R_SKIN);
+    put(new THREE.SphereGeometry(0.015, 8, 6), head, M4(s * 0.04, 0.018, -0.103), 0x0d0f14, 0.3);
+    put(new THREE.BoxGeometry(0.05, 0.012, 0.02), head, M4(s * 0.042, 0.042, -0.104, 0, 0, s * -0.12), col.hair, 0.9);
+  }
+  put(new THREE.BoxGeometry(0.05, 0.008, 0.012), head, M4(0, -0.058, -0.106), 0x5a2a22, 0.6); // mouth
+  const hairC = col.hair;
+  if (look.hair === 'spikes') {
+    put(new THREE.SphereGeometry(0.121, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), head, M4(0, 0.016, 0.006), hairC, 0.9);
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * Math.PI * 2;
+      put(new THREE.ConeGeometry(0.026, 0.085, 6), head, M4(Math.cos(a) * 0.065, 0.12, Math.sin(a) * 0.065 + 0.01, Math.sin(a) * 0.55, 0, -Math.cos(a) * 0.55), hairC, 0.9);
+    }
+    put(new THREE.ConeGeometry(0.03, 0.1, 6), head, M4(0, 0.15, 0.01), hairC, 0.9);
+  } else if (look.hair === 'puff') {
+    for (const [x, y, z, r] of [[0, 0.13, 0.03, 0.125], [-0.09, 0.09, 0.04, 0.09], [0.09, 0.09, 0.04, 0.09], [0, 0.07, 0.1, 0.1], [0, 0.11, -0.03, 0.09]]) put(new THREE.SphereGeometry(r, 12, 9), head, M4(x, y, z), hairC, 0.95);
+  } else {
+    put(new THREE.SphereGeometry(0.121, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.47), head, M4(0, 0.018, 0.012), hairC, 0.9);
+  }
+  if (look.headband) {
+    const hb = new THREE.TorusGeometry(0.114, 0.018, 6, 22);
+    hb.rotateX(Math.PI / 2);
+    put(hb, head, M4(0, 0.06, 0.004, 0, 0, 0, 0.95, 1, 1.02), col.accent, 0.8, 0.2);
+  }
+  if (look.shades) put(new THREE.BoxGeometry(0.19, 0.04, 0.03), head, M4(0, 0.024, -0.106), 0x0b0c10, 0.12);
+  if (look.beard) put(new THREE.SphereGeometry(0.094, 12, 8, 0, Math.PI * 2, Math.PI * 0.42, Math.PI * 0.45), head, M4(0, -0.04, -0.018, 0, 0, 0, 1, 1, 1.04), hairC, 0.95);
+
+  const { mat, rim } = athleteMaterial();
+  const body = new THREE.SkinnedMesh(B.build(), mat);
+  body.frustumCulled = false;
+  body.add(hips); // the root bone lives under the mesh, as glTF rigs do
+  g.add(body);
+  g.updateMatrixWorld(true);
+  body.bind(new THREE.Skeleton(bones));
+
+  // chest / back numbers: small decal planes riding the torso bone
+  const numFg = '#' + new THREE.Color(col.trim).getHexString();
+  const backTex = numberTexture(num, numFg, 'rgba(8,10,16,0.85)');
+  const backM = new THREE.MeshBasicMaterial({ map: backTex, transparent: true, depthWrite: false, polygonOffsetFactor: -2, polygonOffset: true });
+  backM.color.setScalar(0.8);
+  extraMats.push(backM);
+  const depth = 0.206 * TORSO_SZ + 0.006; // the singlet's half-depth at chest height, plus a hair
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.24), backM);
+  back.position.set(0, 0.36, depth);
+  torso.add(back);
+  const front = new THREE.Mesh(new THREE.PlaneGeometry(0.19, 0.19), backM);
+  front.position.set(0, 0.4, -depth);
+  front.rotation.y = Math.PI;
+  torso.add(front);
   g.userData = { shoulder: armR.sh, hand: armR.hand };
 
   const D = DEG;
@@ -197,10 +305,21 @@ export function buildThrower(persona = null) {
   const stance = (hipY) => {
     hips.position.y = hipY;
   };
+  const rest = (feet = true) => {
+    if (feet) {
+      set(legR.foot);
+      set(legL.foot);
+    }
+    set(armR.hand);
+    set(armL.hand);
+  };
+  const POSE_BONES = bones;
   const api = {
     group: g,
+    body,
     hand: armR.hand,
     shoulder: armR.sh,
+    rim,
     /** Bend the athlete for a technique: { crouch, spread, lean, arm, bob } (see techniques.js). No argument = neutral. */
     setStyle(pose) {
       S = { ...NEUTRAL, ...(pose || {}) };
@@ -209,20 +328,27 @@ export function buildThrower(persona = null) {
     setFacing(psi) {
       g.rotation.y = -psi * DEG;
     },
-    /** Wind-up stance in the circle: breathing, throwing arm out and low, discus visible. */
+    /**
+     * Wind-up stance in the circle: breathing, weight shifting foot to foot, and every few seconds a slow
+     * preliminary swing of the discus arm (the real pre-spin ritual). The discus stays in view.
+     */
     idle(t = 0) {
       const br = Math.sin(t * 2.2);
-      stance(0.93 + br * 0.006);
-      set(hips, 0, 0, 0);
-      set(torso, 0.06 + br * 0.015, 0, 0);
-      set(head, -0.04, 0, 0);
+      const cyc = (t % 5.2) / 5.2;
+      const sw = cyc < 0.62 ? Math.sin((cyc / 0.62) * Math.PI) ** 2 : 0; // one swing back and through, then a pause
+      const shift = Math.sin(t * 0.7) * 0.5;
+      rest();
+      stance(0.93 + br * 0.006 - sw * 0.012);
+      set(hips, 0, -0.08 * sw, 0.012 * shift);
+      set(torso, 0.06 + br * 0.015, -0.32 * sw, -0.01 * shift);
+      set(head, -0.04, 0.22 * sw, 0);
       set(legR.hip, 0.3, 0, -0.2);
-      set(legR.knee, -0.5, 0, 0);
+      set(legR.knee, -0.5 - 0.06 * sw, 0, 0);
       set(legL.hip, 0.3, 0, 0.2);
       set(legL.knee, -0.5, 0, 0);
-      set(armR.sh, 0, -0.2, -0.1 + br * 0.015);
+      set(armR.sh, 0, -0.2 - 0.85 * sw, -0.1 + br * 0.015 + 0.12 * sw);
       set(armR.elbow, 0, -0.1, 0);
-      set(armL.sh, 0, -0.55, -0.35);
+      set(armL.sh, 0, -0.55 + 0.25 * sw, -0.35);
       set(armL.elbow, 0, -0.7, 0);
     },
     /**
@@ -232,6 +358,7 @@ export function buildThrower(persona = null) {
     spin(rot, p) {
       const w = rot * D;
       const bob = (Math.sin(w * 2 - 0.6) * 0.5 + 0.5) * S.bob; // two dips per turn
+      rest();
       stance(0.93 - 0.08 * S.crouch * (0.3 + 0.7 * p) * bob);
       const crouch = (0.35 + 0.35 * p * bob) * S.crouch;
       set(hips, 0, 0.18 * p, 0);
@@ -241,6 +368,8 @@ export function buildThrower(persona = null) {
       set(legR.knee, -crouch * 1.5, 0, 0);
       set(legL.hip, crouch * 0.8, 0, 0.26 + S.spread);
       set(legL.knee, -crouch * 1.3, 0, 0);
+      // the right foot pivots on the ball through each turn
+      set(legR.foot, -0.25 * bob, 0, 0);
       set(armR.sh, 0, -(0.35 + 0.8 * p), 0.05 + 0.2 * p + S.arm);
       set(armR.elbow, 0, -0.08, 0);
       set(armL.sh, 0, -(0.9 + 0.2 * p), -0.15);
@@ -250,6 +379,7 @@ export function buildThrower(persona = null) {
     release(k) {
       const e = easeOut(k * 2.4);
       const settle = easeOut((k - 0.35) / 0.65);
+      rest();
       stance(0.93 - 0.02 * (1 - e) + 0.05 * Math.sin(Math.PI * clamp01(k * 1.6)));
       set(hips, 0, 0.1 * (1 - e) + 0.3 * e, 0);
       set(torso, 0.1 - 0.12 * e + S.lean * (1 - e * 0.6), -0.85 + 1.5 * e - 0.25 * settle, 0.1 * e);
@@ -262,12 +392,72 @@ export function buildThrower(persona = null) {
       set(legL.knee, -0.3 - 0.2 * e, 0, 0);
       set(legR.hip, -0.1 - 0.7 * e * (1 - settle * 0.6), 0, -0.2 - S.spread * 0.5);
       set(legR.knee, -0.2 - 0.9 * e * (1 - settle * 0.6), 0, 0);
+      set(legR.foot, 0.35 * e * (1 - settle), 0, 0);
+    },
+    /**
+     * Walking. phase in strides (1 = right + left step), k = 0 (standing) .. 1 (full stride), carry = the discus hand
+     * stays tucked. Hips bob twice a stride, pelvis and shoulders counter-rotate, arms swing against the legs.
+     */
+    walk(phase, k = 1, carry = true) {
+      const w = phase * Math.PI * 2;
+      const s = Math.sin(w);
+      const c = Math.cos(w);
+      stance(0.955 - 0.012 * k + 0.02 * k * Math.cos(2 * w));
+      set(hips, 0, 0.11 * s * k, 0.035 * c * k);
+      set(torso, 0.045 * k, -0.15 * s * k, -0.025 * c * k);
+      set(head, -0.035, 0.06 * s * k, 0.015 * c * k);
+      const legPose = (L, ph) => {
+        set(L.hip, 0.4 * Math.sin(ph) * k, 0, 0);
+        const bend = Math.max(0, Math.cos(ph + 1.0));
+        set(L.knee, -(0.05 + 0.75 * bend * bend) * k, 0, 0);
+        set(L.foot, (0.3 * Math.max(0, -Math.sin(ph + 0.4)) - 0.12 * Math.max(0, Math.sin(ph))) * k, 0, 0);
+      };
+      legPose(legR, w);
+      legPose(legL, w + Math.PI);
+      set(armR.sh, (carry ? -0.12 : -0.32) * s * k + 0.05, 0, -1.3);
+      set(armR.elbow, 0, carry ? 0.5 : 0.28, 0);
+      set(armL.sh, 0.32 * s * k + 0.05, 0, 1.3);
+      set(armL.elbow, 0, -0.3, 0);
+      set(armR.hand, 0, 0, carry ? 0.25 : 0);
+      set(armL.hand);
+    },
+    /** Arms loose and shaken out (the last ritual before stepping in), u 0..1. */
+    shake(t, u) {
+      const a = Math.sin(t * 34) * 0.12 * u;
+      set(armR.sh, a, 0, -1.25 + a);
+      set(armL.sh, -a, 0, 1.25 - a);
+      set(armR.elbow, 0, 0.2, 0);
+      set(armL.elbow, 0, -0.2, 0);
+    },
+    /** Snapshot / restore every joint (the replay renders a past pose into the jumbotron, then puts the live one back). */
+    getPose(out = []) {
+      let i = 0;
+      out[i++] = g.rotation.y;
+      out[i++] = hips.position.y;
+      for (const b of POSE_BONES) {
+        out[i++] = b.quaternion.x;
+        out[i++] = b.quaternion.y;
+        out[i++] = b.quaternion.z;
+        out[i++] = b.quaternion.w;
+      }
+      return out;
+    },
+    setPose(p) {
+      let i = 0;
+      g.rotation.y = p[i++];
+      hips.position.y = p[i++];
+      for (const b of POSE_BONES) {
+        b.quaternion.set(p[i], p[i + 1], p[i + 2], p[i + 3]);
+        i += 4;
+      }
     },
     dispose() {
-      g.traverse((o) => {
-        if (o.geometry) o.geometry.dispose();
-      });
-      mats.forEach((m) => m.dispose());
+      body.geometry.dispose();
+      body.skeleton.dispose();
+      mat.dispose();
+      back.geometry.dispose();
+      front.geometry.dispose();
+      extraMats.forEach((m) => m.dispose());
       backTex.dispose();
     },
   };
@@ -452,5 +642,38 @@ export function buildBlobShadow() {
   const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false }));
   m.rotation.x = -Math.PI / 2;
   m.position.y = 0.045;
+  return m;
+}
+
+/** A scuffed divot where the discus lands: torn turf and soil, soft edged, along the line of flight. */
+export function buildDivot() {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const x = c.getContext('2d');
+  const gr = x.createRadialGradient(64, 64, 4, 64, 64, 62);
+  gr.addColorStop(0, 'rgba(46,34,22,0.95)');
+  gr.addColorStop(0.45, 'rgba(58,44,28,0.75)');
+  gr.addColorStop(0.75, 'rgba(40,52,24,0.35)');
+  gr.addColorStop(1, 'rgba(30,40,20,0)');
+  x.fillStyle = gr;
+  x.fillRect(0, 0, 128, 128);
+  // torn tufts at the leading edge
+  x.fillStyle = 'rgba(70,96,40,0.55)';
+  for (let i = 0; i < 26; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 30 + Math.random() * 22;
+    x.fillRect(64 + Math.cos(a) * r, 64 + Math.sin(a) * r * 0.6 - 10, 3, 6);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.7, 1.25),
+    new THREE.MeshStandardMaterial({ map: t, transparent: true, depthWrite: false, roughness: 1, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }),
+  );
+  m.rotation.x = -Math.PI / 2;
+  m.renderOrder = 1;
+  m.visible = false;
+  m.name = 'divot';
   return m;
 }

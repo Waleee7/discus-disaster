@@ -200,7 +200,8 @@ export function buildWeatherFx(ctx, { sky, lights, crowd, scene, renderer }) {
       lights.hemi.intensity = sunset ? 1.5 : 0.5;
       lights.hemi.color.set(sunset ? 0xffc59a : 0x6f86c4);
       lights.hemi.groundColor.set(sunset ? 0x4a3a2a : 0x251c12);
-      lights.key.intensity = sunset ? 4 : 14;
+      if (lights.setKey) lights.setKey(sunset ? 0.12 : 1);
+      else lights.key.intensity = sunset ? 4 : 14;
       lights.setHaze(!sunset);
       sun.visible = sunset;
       sun.intensity = sunset ? 5 : 0;

@@ -35,7 +35,7 @@
     <nav class="tools" aria-label="Game options">
       <button id="btnVoice" type="button" aria-pressed="false" title="Announcer voice (M)" aria-label="Announcer voice"><span class="ic" aria-hidden="true">&#9835;</span><span class="lbl"> VOICE</span> <b>OFF</b></button>
       <button id="btnHaptics" type="button" aria-pressed="true" title="Haptics (H)" aria-label="Haptics"><span class="ic" aria-hidden="true">&#9678;</span><span class="lbl"> HAPTICS</span> <b>ON</b></button>
-      <button id="btnReplay" type="button" disabled title="Replay best throw (R)" aria-label="Replay best throw"><span class="ic" aria-hidden="true">&#8634;</span><span class="lbl"> REPLAY</span></button>
+      <button id="btnReplay" type="button" disabled title="Replay best throw (R): unlocks after your first legal throw" aria-label="Replay best throw"><span class="ic" aria-hidden="true">&#8634;</span><span class="lbl"> REPLAY</span></button>
       <button id="btnMenu" type="button" title="Menu: athlete, mode, board (Esc)" aria-label="Menu: athlete, mode and leaderboard"><span class="ic" aria-hidden="true">&#9776;</span><span class="lbl"> MENU</span></button>
     </nav>
 
@@ -58,7 +58,7 @@
     </div>
 
     <!-- instant replay tag -->
-    <div id="replayTag" hidden><i></i> INSTANT REPLAY <span id="replayInfo" class="num"></span></div>
+    <div id="replayTag" hidden><b>REPLAY</b><span id="replayInfo" class="num"></span><i aria-hidden="true"></i></div>
 
     <!-- flash message -->
     <div id="flash" role="status" aria-live="assertive" hidden></div>
@@ -130,6 +130,23 @@
       <p id="ltText" role="status" aria-live="polite"></p>
     </section>
   </div>
+
+  <!-- cinematic layer: letterbox bars (walk-out + replay), the walk-out name card and skip hint. Decorative: the status
+       line below is what a screen reader hears. Pointer events pass through, so a tap anywhere skips. -->
+  <div class="bars" aria-hidden="true"><i></i><i></i></div>
+  <div id="walk" class="walk" hidden aria-hidden="true">
+    <section id="nameCard" class="namecard">
+      <span id="ncNum" class="nc-num num">7</span>
+      <div class="nc-main">
+        <small id="ncRole">THE HYPE ROOKIE</small>
+        <b id="ncName">BLAZE</b>
+        <span id="ncMeta" class="nc-meta num"></span>
+      </div>
+      <span id="ncVenue" class="nc-venue num"></span>
+    </section>
+    <span class="skip"><span class="kb">SKIP <kbd>SPACE</kbd></span><span class="tp">TAP TO SKIP</span></span>
+  </div>
+  <p id="cineStatus" class="sr-only" role="status" aria-live="polite"></p>
 
   <!-- start screen: title, athlete carousel, mode toggle, PLAY, BOARD -->
   <div id="start" class="overlay start" role="dialog" aria-modal="true" aria-labelledby="startTitle">

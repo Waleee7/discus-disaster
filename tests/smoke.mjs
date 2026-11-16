@@ -362,9 +362,18 @@ async function run(name, viewport, mobile) {
   await click('#modeRookie');
   assert.equal(await page.evaluate(() => localStorage.getItem('dd-mode')), 'rookie');
 
-  // 3) PLAY with a real click, then the real input path: Space starts a spin, power meter moves, release launches a flight
+  // 3) PLAY with a real click opens the walk-out (tunnel, tracking shot, crane into the circle); a real press skips it,
+  // then the real input path: Space starts a spin, power meter moves, release launches a flight
   await click('#btnStart');
-  assert.equal(await page.evaluate(() => window.__debug.state), 'ready', 'PLAY leaves the start screen');
+  assert.equal(await page.evaluate(() => window.__debug.state), 'walkout', 'PLAY opens the walk-out');
+  await page.evaluate(() => window.__debug.advance(1.6));
+  assert.ok(await finiteCamera(page), 'walk-out camera is finite');
+  assert.ok(await page.evaluate(() => document.body.classList.contains('cine')), 'letterbox is on during the walk-out');
+  await page.screenshot({ path: path.join(SHOTS, `${name}-2b-walkout.png`) });
+  await page.keyboard.press('Space');
+  assert.equal(await page.evaluate(() => window.__debug.state), 'ready', 'a press skips the walk-out');
+  assert.equal(await page.evaluate(() => window.__debug.game.thrower.group.position.length()), 0, 'the athlete is back in the circle');
+  assert.ok(!(await page.evaluate(() => document.body.classList.contains('cine'))), 'letterbox off after the walk-out');
   await page.evaluate(() => window.__debug.advance(0.5));
   await page.waitForTimeout(600);
   await hudChecks(page, name, mobile, 'ready');
@@ -400,16 +409,22 @@ async function run(name, viewport, mobile) {
   assert.ok(Math.abs(parseFloat(shown) - res.distance) < 0.011, 'displayed distance matches the physics result');
   assert.match((await page.textContent('#resFeet')).trim(), /^\d+' \d+"$/, 'distance also shown in feet/inches');
   assert.match(await page.textContent('#resChips'), /OLD IRON/, 'the result shows the rival comparison');
+  assert.equal(await page.evaluate(() => window.__debug.game.screen.mode), 'replay', 'the stadium screen replays the throw');
   await page.evaluate(() => window.__debug.advance(1.5)); // the result camera glides to its overview
   await page.waitForTimeout(500); // let the CSS slide-in finish
   await hudChecks(page, name, mobile, 'result');
   await page.screenshot({ path: path.join(SHOTS, `${name}-6-result.png`) });
 
-  // 5) replay of the best throw
+  // 5) cinematic replay of the best throw: letterboxed, plays to the end on its own and hands back the result card
   await page.evaluate(() => window.__debug.game.onAction('replay'));
   assert.equal(await page.evaluate(() => window.__debug.state), 'replay');
   await page.evaluate(() => window.__debug.advance(2.2));
+  assert.ok(await finiteCamera(page), 'replay camera is finite');
   await page.screenshot({ path: path.join(SHOTS, `${name}-9-replay.png`) });
+  const rtTotal = await page.evaluate(() => window.__debug.game.rt.total);
+  assert.ok(rtTotal > 3 && rtTotal < 20, `replay length is sane (${rtTotal.toFixed(1)} s)`);
+  await page.evaluate((t) => window.__debug.advance(t, { step: 1 / 30 }), rtTotal + 0.5);
+  assert.equal(await page.evaluate(() => window.__debug.state), 'result', 'the replay ends back on the result card');
   await ctx.close();
   return res;
 }
@@ -577,6 +592,8 @@ async function boardChecks(name, viewport, mobile) {
     await page.locator('#btnBoard2').click();
     await page.locator('#tabDaily').click();
     await page.locator('#btnPlayDaily').click();
+    assert.equal(await page.evaluate(() => window.__debug.state), 'walkout', 'the Daily opens with the walk-out');
+    await page.evaluate(() => window.__debug.skipWalk());
     assert.equal(await page.evaluate(() => window.__debug.state), 'ready');
     winds.push(await page.evaluate(() => JSON.stringify(window.__debug.game.layout.wind)));
     assert.equal((await page.textContent('#attemptLbl')).trim(), 'DAILY');
@@ -631,6 +648,11 @@ async function featureChecks(name, viewport, mobile) {
   await page.waitForTimeout(250);
   await shot('13-venue-weather');
   await click('#btnStart');
+  // this time the walk-out runs to the end on its own and hands the camera to the throwing view
+  const walkTotal = await D(() => window.__debug.walk.total);
+  await D((t) => window.__debug.advance(t + 0.4, { step: 1 / 30 }), walkTotal);
+  assert.equal(await D(() => window.__debug.state), 'ready', 'the walk-out hands over to the throw');
+  assert.ok(await finiteCamera(page), 'camera finite after the walk-out');
   await D(() => window.__debug.advance(1));
   const wxTitle = ((await page.getAttribute('#windWx', 'title')) || '').trim();
   assert.match(wxTitle, /^Rain, \d+°C/, `weather + temperature are in the wind badge (title: ${wxTitle})`);
@@ -647,11 +669,11 @@ async function featureChecks(name, viewport, mobile) {
   });
   assert.equal(rho.rho, rho.want, 'the flight uses this weather\'s air density');
   assert.ok(!rho.foul && rho.d > 50 && rho.d < 78, `a rainy throw is a believable throw: ${rho.d}`);
-  await D(() => { window.__debug.setWeather('sunset'); window.__debug.setVenue('college'); window.__debug.game.newRun(); window.__debug.advance(2.5); });
+  await D(() => { window.__debug.setWeather('sunset'); window.__debug.setVenue('college'); window.__debug.game.newRun(true); window.__debug.advance(2.5); });
   assert.equal(await D(() => window.__debug.game.state), 'ready');
   await hudChecks(page, name, mobile, 'ready');
   await shot('15-college-sunset-ready');
-  await D(() => { window.__debug.setWeather('clear'); window.__debug.game.newRun(); window.__debug.advance(1); });
+  await D(() => { window.__debug.setWeather('clear'); window.__debug.game.newRun(true); window.__debug.advance(1); });
   assert.equal(await D(() => window.__debug.game.layout.weather), 'clear');
 
   // ---- technique picker ----

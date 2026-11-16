@@ -264,6 +264,21 @@ export class GeoBuilder {
   }
 
   build({ colors = true, alphaColors = false } = {}) {
+    // degenerate primitives (zero-length tube segments, collapsed caps) leave zero normals; normalize(0) is NaN in the
+    // shader, which an 8-bit canvas hides as a black pixel but a half-float HDR target keeps
+    for (let i = 0; i < this.nor.length; i += 3) {
+      const l = Math.hypot(this.nor[i], this.nor[i + 1], this.nor[i + 2]);
+      if (!(l > 1e-6)) {
+        this.nor[i] = 0;
+        this.nor[i + 1] = 1;
+        this.nor[i + 2] = 0;
+      } else if (Math.abs(l - 1) > 1e-3) {
+        this.nor[i] /= l;
+        this.nor[i + 1] /= l;
+        this.nor[i + 2] /= l;
+      }
+    }
+    for (let i = 0; i < this.pos.length; i++) if (!Number.isFinite(this.pos[i])) this.pos[i] = 0;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));

@@ -13,13 +13,14 @@ import { buildProps } from './scenery/props.js';
 import { StaticCards } from './cards.js';
 import { buildWeatherFx } from './scenery/wx.js';
 import { buildBowl } from './scenery/bowl.js';
+import { buildTunnel } from './scenery/tunnel.js';
 import { gustFactor } from './physics.js';
 
 export { ARENA };
 const ORIGIN = new THREE.Vector3();
 export const toThree = (x, y, z, out = new THREE.Vector3()) => out.set(z, y, -x);
 
-export function buildStadium(scene, { reducedMotion = false, viewport, quality, venue = 'college', renderer } = {}) {
+export function buildStadium(scene, { reducedMotion = false, viewport, quality, venue = 'college', renderer, env = null, hdr = false } = {}) {
   const root = new THREE.Group();
   scene.add(root);
   const mats = [];
@@ -36,6 +37,7 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
     scene,
     tier,
     venue,
+    hdr, // linear HDR target + post tone map: additive display-space effects must be scaled down
     refs: {},
     S: (n) => Math.max(64, Math.round(n * tier.tex)),
     keep,
@@ -49,6 +51,7 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
   const sky = buildSky(ctx);
   buildField(ctx);
   buildCage(ctx);
+  const tunnel = buildTunnel(ctx);
   const world = venue === 'world';
   const bowl = world ? buildBowl(ctx) : null;
   const stands = world ? bowl : buildStands(ctx);
@@ -61,6 +64,42 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
     const l = Math.hypot(dx, dz) || 1;
     ctx.contacts.push([(dx / l) * 0.9, (dz / l) * 0.9, 0.8, 2.6, Math.atan2(dx, dz), 0.07]);
   }
+  // KEY: the nearest floodlight bank's share of light on the circle, as one shadow-casting spot. The athlete, the
+  // discus, the cage steel and the net throw real soft shadows on the pad and the turf (the old ground-level point
+  // light lit the athlete but cast nothing). The shadow frustum is focused on the circle and cage only.
+  if (lights.key) lights.key.removeFromParent();
+  const key = new THREE.SpotLight(0xffe2c2, 0, 0, 0.42, 0.85, 1.0);
+  key.name = 'circle-key';
+  key.position.set(-10.9, 12.7, 17.1);
+  key.target.position.set(0, 0.3, -1.6);
+  key.castShadow = !!renderer;
+  const sm = tier.name === 'high' ? 2048 : 1024;
+  key.shadow.mapSize.set(sm, sm);
+  key.shadow.focus = 0.62;
+  key.shadow.camera.near = 8;
+  key.shadow.camera.far = 42;
+  key.shadow.bias = -0.0004;
+  key.shadow.normalBias = 0.025;
+  key.shadow.radius = 3;
+  root.add(key, key.target);
+  const KEY_I = 170;
+  let keyK = 1;
+  let flood = 1;
+  lights.key = key;
+  lights.setKey = (k) => {
+    keyK = k;
+    key.intensity = KEY_I * keyK * flood;
+  };
+  lights.setKey(1);
+  // floodlight level for the walk-out bank-on: multiplies whatever the weather set
+  const rawSetLevel = lights.setLevel.bind(lights);
+  let lvl = 1;
+  let beam = 0.1;
+  lights.setLevel = (k, b = 0.1) => {
+    lvl = k;
+    beam = b;
+    rawSetLevel(k * flood, b * flood);
+  };
   const props = buildProps(ctx);
   ctx.cards.build(root, keep);
   const crowd = stands.crowd;
@@ -98,6 +137,21 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
   root.add(sock);
 
   const wx = buildWeatherFx(ctx, { sky, lights, crowd, scene, renderer });
+  // the cage, discus and athlete cast onto the pad, turf, apron and track under the key light
+  const shadowCasters = [];
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    if (o.name === 'cage-steel' || o.name === 'cage-net') {
+      o.castShadow = true;
+      shadowCasters.push(o);
+    }
+    if (['turf', 'pad', 'track', 'apron', 'tunnel-ribs'].includes(o.name)) o.receiveShadow = true;
+    if (o.name === 'cage-net') {
+      // the net shadow is the mesh pattern, not a solid wall: alpha-tested depth for the shadow pass only
+      o.customDepthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: o.material.map, alphaTest: 0.35 });
+      keep(o.customDepthMaterial);
+    }
+  });
   const state = { wind: { x: 0, z: 0 }, gust: null, time: 0, tier: tier.name, weather: null };
   const apply = (t) => {
     crowd.setDensity(t.crowd);
@@ -117,10 +171,19 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
       state.wind = w;
       state.gust = gust;
     },
+    tunnel,
     /** Weather looks (fog, sky, rain, wet track, sun). `w` is a weather.js preset. */
     setWeather(w) {
       state.weather = w;
       wx.apply(w);
+      const sunset = w.tod === 'sunset';
+      // image-based light: the env does the ambient, so the flat hemisphere fill comes down
+      if (env) {
+        scene.environment = env.get(sunset ? 'sunset' : 'night');
+        lights.hemi.intensity *= 0.45;
+      }
+      lights.setKey(sunset ? 0.12 : 1);
+      key.castShadow = !!renderer && !sunset; // the low sun casts at golden hour; the key would double it
       if (world) bowl.setFog(scene.fog.color, scene.fog.density);
       apply({ high: { crowd: 1, haze: true }, mid: { crowd: 0.7, haze: true }, low: { crowd: 0.42, haze: false } }[state.tier]);
     },
@@ -136,6 +199,18 @@ export function buildStadium(scene, { reducedMotion = false, viewport, quality, 
     setExcite(x) {
       crowd.mat.uniforms.uExcite.value = x;
     },
+    /** Walk-out: camera flashes in the crowd, 0 (normal) .. 1 (a wall of phones). */
+    setFlash(x) {
+      if (crowd.mat.uniforms.uFlash) crowd.mat.uniforms.uFlash.value = x;
+    },
+    /** Floodlight bank level for the walk-out (0 dark .. 1 normal); multiplies the weather's level. */
+    setFlood(f) {
+      flood = f;
+      rawSetLevel(lvl * f, beam * f);
+      key.intensity = KEY_I * keyK * f;
+      crowd.mat.uniforms.uDim.value = 0.32 + 0.68 * Math.min(1, f);
+    },
+    lights,
     /** Runtime quality drop (crowd density, haze). Textures / light count are fixed at build time. */
     degrade() {
       const next = down[state.tier];

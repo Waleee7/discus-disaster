@@ -123,7 +123,9 @@ const PAGE_HELPERS = () => {
       const px = new Uint8Array(4);
       let calls = 0;
       let tris = 0;
+      g.renderer.info.autoReset = false; // the post path renders several passes a frame: count them all
       for (let i = 0; i < n; i++) {
+        g.renderer.info.reset();
         const t0 = performance.now();
         g.update(dt);
         g.render();
