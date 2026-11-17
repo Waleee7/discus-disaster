@@ -12,7 +12,7 @@
 > - **Leaderboard:** arcade initials, local top 10, plus a **Daily Throw** (same wind and cast for everyone that day) with a one-tap **Copy result**.
 > - **Run it:** `git clone https://github.com/Waleee7/discus-disaster.git && cd discus-disaster && python3 -m http.server 8137`, open <http://localhost:8137>.
 
-Built by a real college discus thrower who also writes software. No build step, no install, no CDN: Three.js is vendored in `vendor/`.
+Built by [Akinwale Dare](https://github.com/Waleee7), a college discus and hammer thrower who also writes software. No build step, no install, no CDN: Three.js is vendored in `vendor/`.
 
 <p align="center"><img src="docs/gameplay.gif" alt="Staged Rookie throw by BLAZE: start screen, spin, release in the green, pigeon strike, slow-mo landing, tape" width="720"></p>
 <p align="center"><img src="docs/screenshot.png" alt="Pigeon strike mid-flight under the stadium lights" width="49%"> <img src="docs/shots/mobile-390x844-2-character.png" alt="Phone start screen: athlete carousel, Rookie / Pro toggle, PLAY and BOARD" width="24%"> <img src="docs/shots/mobile-390x844-8-board.png" alt="Phone leaderboard" width="24%"></p>
@@ -35,7 +35,7 @@ Green-screen sheets generated in Google Flow live in `art-src/`. `node scripts/b
 | After a foul | one coaching line: *Let go when the needle is in the green.* | none |
 | Physics, top speed, power curve | **identical** | identical |
 
-A perfect release at full power (~3 turns) is about **66 m in Pro** (the real record is 74.35 m). Rookie keeps the same physics and the same top speed; it only forgives the human part, and a simulated "average first-timer" lands **45-65 m within three throws** (unit-tested). The choice is remembered (`localStorage`, optional: everything works with storage blocked).
+A perfect release at full power (~3 turns) is about **66 m in Pro** (the real world record is 75.56 m). Rookie keeps the same physics and the same top speed; it only forgives the human part, and a simulated "average first-timer" lands **45-65 m within three throws** (unit-tested). The choice is remembered (`localStorage`, optional: everything works with storage blocked).
 
 **Characters.** Three original, fictional athletes built from primitives (capsule limbs, jersey numbers, headband, shades, hair): they differ in colours and personality, and the next one in the carousel is your **rival**. A flag and a line across the sector mark the rival's best mark; the result card tells you by how much you beat it.
 
@@ -95,11 +95,11 @@ alpha  = angle of attack = attitude angle - flight path angle (no wind)
 
 `C_L(alpha)` and `C_D(alpha)` are **approximations** shaped like published discus data (low-aspect-ratio wing, stall near 25 degrees, then flat-plate behaviour), following the qualitative shape in Frohlich (1981), *Am. J. Phys.* 49, and Hubbard & Cheng (2007), *J. Biomech.* 40; the numbers are not copied from those papers. The disc keeps a fixed attitude in flight (no precession).
 
-**The headwind quirk.** Lift grows with airspeed squared, so a well-set nose angle makes the discus fly **farther** into a breeze (and a tailwind costs distance). After each throw the game re-simulates your release in still air and tells you the gain, plus the nose angle your coach would have picked (Rookie sets that nose for you). Real benchmark: men's WR **74.35 m**, Mykolas Alekna, 2024 (a reference, not a claim about this model).
+**The headwind quirk.** Lift grows with airspeed squared, so a well-set nose angle makes the discus fly **farther** into a breeze (and a tailwind costs distance). After each throw the game re-simulates your release in still air and tells you the gain, plus the nose angle your coach would have picked (Rookie sets that nose for you). Real benchmark: the game's world-record line is **74.35 m** (Mykolas Alekna, 2024); Alekna has since raised the record to **75.56 m** (Ramona, April 2025). A reference, not a claim about this model.
 
 ## Also in the box
 
-3D night stadium (all procedural), broadcast camera with a short slow-mo landing and best-throw replay, a lower-third announcer with optional Web Speech voice, the cast (pigeon flock, coach's golf cart, hot-dog vendor, sprinkler, jumbotron), haptics (`navigator.vibrate` + gamepad rumble), keyboard-playable UI with visible focus, `prefers-reduced-motion` support. Page weight about 1.5 MB, fully offline once loaded; only the optional webfont is external. **Tested:** Chromium (Playwright) at 1440x900 and, with touch emulation, 390x844, 844x390 and 667x375. Firefox and Safari should work but are untested, as are real-device touch and haptics.
+3D night stadium (all procedural), broadcast camera with a short slow-mo landing and best-throw replay, a lower-third announcer with optional Web Speech voice, the cast (pigeon flock, coach's golf cart, hot-dog vendor, sprinkler, jumbotron), haptics (`navigator.vibrate` + gamepad rumble), keyboard-playable UI with visible focus, `prefers-reduced-motion` support. Page weight measured on 2026-11-16: 1.26 MB transferred on desktop, 0.75 MB on a phone (half-size art); fully offline once loaded; only the optional webfont is external. **Tested:** Chromium (Playwright) at 1440x900 and, with touch emulation, 390x844, 844x390 and 667x375. Firefox and Safari should work but are untested, as are real-device touch and haptics.
 
 ## Tests
 
@@ -108,6 +108,8 @@ npm test                      # unit tests + browser smoke test
 node tests/smoke.mjs --docs   # same, and refreshes the committed docs/shots/
 node scripts/record-gif.mjs   # regenerates docs/gameplay.gif and docs/screenshot.png (needs ffmpeg)
 ```
+
+Last run on 2026-11-16: **53 of 53 unit tests passed** (`node --test tests/`), and the Playwright smoke test **passed at all four viewports** (1440x900, 390x844, 844x390, 667x375) with no console errors.
 
 <details>
 <summary>What the tests check</summary>
@@ -119,8 +121,37 @@ node scripts/record-gif.mjs   # regenerates docs/gameplay.gif and docs/screensho
 
 </details>
 
+## Architecture
+
+```mermaid
+flowchart LR
+  HTML["index.html<br/>importmap → vendor/three (r160)"] --> MAIN[src/main.js]
+  MAIN --> GAME["game.js<br/>throw loop, screens, scoring"]
+  GAME --> INPUT["input.js<br/>keyboard · touch · gamepad"]
+  GAME --> PHYS["physics.js<br/>RK4 at 1/240 s · lift + drag · wind"]
+  GAME --> RULES["modes · techniques · tuning<br/>weather · venues · personas"]
+  GAME --> WORLD["scene.js + scenery/<br/>stadium, cage, field, sky, lights"]
+  GAME --> CAST["actors · obstacles · cards<br/>(Flow art atlas)"]
+  GAME --> VIEW["camera · cinema · post · fx"]
+  GAME --> VOICE["announcer · screen · haptics"]
+  GAME --> BOARD["leaderboard · storage<br/>localStorage, adapter for a global board"]
+```
+
+The modules that hold rules and numbers (`physics`, `tuning`, `modes`, `personas`, `leaderboard`, `storage`) never touch the DOM, so the Node tests import them directly.
+
+## Status
+
+Live and playable at [discus-disaster.vercel.app](https://discus-disaster.vercel.app), deployed from this repo's `main` (checked 2026-11-16). Search indexing is switched off (`noindex`) until launch. Tested in Chromium only; real-phone touch and haptics are still untested.
+
+## Roadmap
+
+- More real kit art: people in the stands, the coach's golf cart and stadium dressing.
+- Move the world-record line to Alekna's current 75.56 m.
+- A global leaderboard behind the existing two-method adapter.
+- A real-phone pass on touch, haptics and frame rate.
+
 ## Tech and credits
 
 Three.js r160 vendored in `vendor/`, import map, vanilla JS modules, CSS, Oswald + JetBrains Mono. Static files only: `index.html`, `src/*.js`, `src/style.css`. Pure modules (`physics`, `tuning`, `modes`, `personas`, `leaderboard`, `storage`) have no DOM, so Node tests import them directly; a `window.__debug` hook drives the deterministic captures.
 
-Game, physics and jokes by Josh Dare. Characters are original and fictional. WR reference: World Athletics. No real pigeons were thrown at. MIT licensed, see [LICENSE](LICENSE); Three.js is MIT, see `vendor/three.LICENSE`.
+Game, physics and jokes by Akinwale Dare. Characters are original and fictional. WR reference: World Athletics. No real pigeons were thrown at. MIT licensed, see [LICENSE](LICENSE); Three.js is MIT, see `vendor/three.LICENSE`.
